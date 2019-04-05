@@ -9,17 +9,17 @@ question: How does long-term N deposition influence the diversity and compositio
 
 ```{r set working directory}
 rm(list=ls())
-knitr::opts_knit$set(root.dir='C:/Users/annorion/Documents/_Projects/2015_WRC/Data/sequences/may2018')
-#knitr::knit("WRC2015RhizoMay2018.Rmd")
-#list.files()
+knitr::opts_knit$set(root.dir="~/GitHub/WRC15_Rhizo/data")
+#knitr::knit("WRC2015RhizoDec2018.Rmd")
+list.files()
 ```
 
 ```{r load packages and functions }
 getwd()
 
 #Set source R tools
-source("bin/DiversityFunctions.R")
-source("bin/MothurTools.R")
+source("../bin/DiversityFunctions.R")
+source("../bin/MothurTools.R")
 
 #load req'd packages
 require("vegan")
@@ -55,11 +55,12 @@ set.seed(42)
 ```
 
 ```{r load data files and trim}
+getwd()
 #Load data files
 #Assign file names to variables
-sharedfile = "wrc15rhizodenovo.17May2018.opti_mcc.unique_list.shared"
-taxfile = "wrc15rhizodenovo.17May2018.opti_mcc.unique_list.0.03.cons.taxonomy"
-metafile = "2015_WestResearchCampus_Sampling_Rhizo.csv"
+sharedfile = "../data/wrc15rhizodenovo.17May2018.opti_mcc.unique_list.shared"
+taxfile = "../data/wrc15rhizodenovo.17May2018.opti_mcc.unique_list.0.03.cons.taxonomy"
+metafile = "../data/2015_WestResearchCampus_Sampling_Rhizo.csv"
 
 #Read in design file
 meta <- read.csv(metafile)
@@ -131,7 +132,7 @@ abline(0, 1)
 rarecurve(otu.2, step = 20, sample = raremax, col = "blue", cex = 0.6)
 ```
 
-```{r Relative abundance and PERMANOVA - not rarefied}
+```{r Relative abundance and PERMANOVA }
 #transforms read counts to relative abundance
 otu.2.rel <- otu.2
 for(i in 1:dim(otu.2)[1]){
@@ -153,7 +154,7 @@ pairwise.adonis(metaotu[,-c(1:19)],metaotu$plant)
 #pairwise.adonis(metaotu[,-c(1:19)],metaotu$type)
 ```
 
-```{r Calculate distance matrix and PCoA components - not rarefied}
+```{r Calculate distance matrix and PCoA components }
 
 otu.2.rel.dist<-vegdist(otu.2.rel, method="bray")
 
@@ -171,7 +172,7 @@ explainvar2a
 
 ```
 
-```{r PCoA Plot - not rarefied}
+```{r PCoA Plot }
 all.equal(rownames(meta), rownames(otu.2.rel))
 # Set treatments
 treat1 <- as.factor(meta$plant)
@@ -248,7 +249,7 @@ ggsave("16SrRNA_WRC2015Rhizo.jpg", plot=last_plot(), device=NULL, path=NULL, sca
 
 ```
 
-```{r Presence_Absence and Species richness - not rarefied}
+```{r Presence_Absence and Species richness }
 #Transform data to reflect only presence or absence ie 0 or 1
 otu.2.PA<-(otu.2>0*1)
 #sanity check 
@@ -1029,4 +1030,238 @@ t
 
 
 
+```
+
+
+```{r venn_diagram_mowed}
+
+#Compare list of OTUs in grass m/mf and forb m/mf
+#Core micorbiome within plant species, among plant species?
+
+#Combine otu list and meta data so can filter otus
+metaotu.2 <- cbind(otu.2, meta)
+#head(metaotu.2)
+#tail(metaotu.2)
+
+#Get Otu list for grass M
+metaotu.2.avM <- metaotu.2[which(metaotu.2$pxt=='avM'),]
+#Remove meta data, checking where meta data begins/ends
+metaotu.2.avM.t<-metaotu.2.avM[,c(18206:18224)]
+metaotu.2.avM<-metaotu.2.avM[,-c(18206:18224)]
+#Tranpose data frame
+metaotu.2.avM.t <- as.data.frame(t(metaotu.2.avM))
+head(metaotu.2.avM.t)
+#Select only the OTUs that appear in every field replicate of a treatment 
+colnames(metaotu.2.avM.t)
+#select rows that are not equal to zero, all columns
+metaotu.2.avM.t <- metaotu.2.avM.t[which(metaotu.2.avM.t$WRC15AVRS2M!=0 & metaotu.2.avM.t$WRC15AVRS4M!=0 &  metaotu.2.avM.t$WRC15AVRS6M!=0 & metaotu.2.avM.t$WRC15AVRS8M!=0),]
+avM.otu <- rownames(metaotu.2.avM.t)
+
+#Get Otu list for grass MF
+metaotu.2.avMF <- metaotu.2[which(metaotu.2$pxt=='avMF'),]
+#Remove meta data, checking where meta data begina/ends
+metaotu.2.avMF.t<-metaotu.2.avMF[,c(18206:18224)]
+metaotu.2.avMF<-metaotu.2.avMF[,-c(18206:18224)]
+metaotu.2.avMF.t <- as.data.frame(t(metaotu.2.avMF))
+head(metaotu.2.avMF.t)
+#Select only the OTUs that appear in every treatment of one type
+colnames(metaotu.2.avMF.t)
+metaotu.2.avMF.t <- metaotu.2.avMF.t[which((metaotu.2.avMF.t$WRC15AVRS2MF!=0 & metaotu.2.avMF.t$WRC15AVRS4MF!=0 & metaotu.2.avMF.t$WRC15AVRS6MF!=0 & metaotu.2.avMF.t$WRC15AVRS8MF!=0)),]
+avMF.otu <- rownames(metaotu.2.avMF.t)
+#Which taxa are the same between avm and avmf?
+av.diff <- intersect(avM.otu, avMF.otu)
+tax <- as.data.frame(tax_table(meta_merge))
+otu = row.names(tax)
+tax <- cbind(otu, tax)
+tax.av.core <- tax %>% filter(row.names(tax) %in% av.diff)
+
+#Sum occurences of a particular rank
+tax.av.core.r <- tax.av.core %>% 
+  group_by(Rank2) %>%
+  tally()
+#Add field for the percentage of the total for taxa in that rank
+col_sum <- sum(tax.av.core.r$n)
+av.p <- within(tax.av.core.r, p <- (n/col_sum)*100)
+#add field to denote these are from the grass samples
+group = "g"
+tax.av.core.r <- cbind(group, tax.av.core.r)
+av.p <- cbind(group, av.p)
+
+av.core.plot <- ggplot(tax.av.core.r, aes(x=Rank2, y=n)) + geom_point() + coord_flip()
+av.core.plot
+
+#Get Otu list for forb M
+metaotu.2.ecM <- metaotu.2[which(metaotu.2$pxt=='ecM'),]
+#Remove meta data, checking where meta data begins/ends
+metaotu.2.ecM.t<-metaotu.2.ecM[,c(18206:18224)]
+metaotu.2.ecM<-metaotu.2.ecM[,-c(18206:18224)]
+#Tranpose data frame
+metaotu.2.ecM.t <- as.data.frame(t(metaotu.2.ecM))
+head(metaotu.2.ecM.t)
+#Select only the OTUs that appear in every field replicate of a treatment 
+colnames(metaotu.2.ecM.t)
+#select rows that are not equal to zero, all columns
+metaotu.2.ecM.t <- metaotu.2.ecM.t[which(metaotu.2.ecM.t$WRC15ECRS2M!=0 & metaotu.2.ecM.t$WRC15ECRS4M!=0 &  metaotu.2.ecM.t$WRC15ECRS6M!=0 & metaotu.2.ecM.t$WRC15ECRS8M!=0),]
+ecM.otu <- rownames(metaotu.2.ecM.t)
+
+#Get Otu list for forb MF
+metaotu.2.ecMF <- metaotu.2[which(metaotu.2$pxt=='ecMF'),]
+#Remove meta data, checking where meta data begina/ends
+metaotu.2.ecMF.t<-metaotu.2.ecMF[,c(18206:18224)]
+metaotu.2.ecMF<-metaotu.2.ecMF[,-c(18206:18224)]
+metaotu.2.ecMF.t <- as.data.frame(t(metaotu.2.ecMF))
+head(metaotu.2.ecMF.t)
+#Select only the OTUs that appear in every treatment of one type
+colnames(metaotu.2.ecMF.t)
+metaotu.2.ecMF.t <- metaotu.2.ecMF.t[which((metaotu.2.ecMF.t$WRC15ECRS2MF!=0 & metaotu.2.ecMF.t$WRC15ECRS4MF!=0 & metaotu.2.ecMF.t$WRC15ECRS6MF!=0 & metaotu.2.ecMF.t$WRC15ECRS8MF!=0)),]
+ecMF.otu <- rownames(metaotu.2.ecMF.t)
+
+#Otus that are the same
+ec.diff <- intersect(ecM.otu, ecMF.otu)
+ec.diff
+#Join with taxonomy file
+tax <- as.data.frame(tax_table(meta_merge))
+otu = row.names(tax)
+tax <- cbind(otu, tax)
+tax.ec.core <- tax %>% filter(row.names(tax) %in% ec.diff)
+
+#Count occurences of taxa in a rank
+tax.ec.core.r <- tax.ec.core %>% 
+  group_by(Rank2) %>%
+  tally()
+#calculate the percentage of the total that each taxa represents
+col_sum <- sum(tax.ec.core.r$n)
+ec.p <- within(tax.ec.core.r, p <- (n/col_sum)*100)
+#add column to denote from forb gorup
+group = "f"
+tax.ec.core.r <- cbind(group, tax.ec.core.r)
+ec.p <- cbind(group, ec.p)
+
+ec.core.plot <- ggplot(tax.ec.core.r, aes(x=Rank2, y=n)) + geom_point() + coord_flip()
+ec.core.plot
+
+#which otus are the same between grass and forb?
+ec.av.diff <- intersect(ec.diff, av.diff)
+ec.av.diff
+#which otus are different in forb compared ot grass?
+ecdiff <- setdiff(ec.diff, av.diff)
+ecdiff
+
+tax <- as.data.frame(tax_table(meta_merge))
+otu = row.names(tax)
+tax <- cbind(otu, tax)
+tax.ecdiff <- tax %>% filter(row.names(tax) %in% ecdiff)
+
+tax.ecdiff.r <- tax.ecdiff %>% 
+  group_by(Rank2) %>%
+  tally()
+
+#Whch otus are diff in grass compared to forb?
+avdiff <- setdiff(av.diff, ec.diff)
+avdiff
+
+tax <- as.data.frame(tax_table(meta_merge))
+otu = row.names(tax)
+tax <- cbind(otu, tax)
+tax.avdiff <- tax %>% filter(row.names(tax) %in% avdiff)
+
+tax.avdiff.r <- tax.avdiff %>% 
+  group_by(Rank2) %>%
+  tally()
+
+#assign taxonomy to otus for otus similar in grass and forb
+tax <- as.data.frame(tax_table(meta_merge))
+otu = row.names(tax)
+tax <- cbind(otu, tax)
+tax.ec.av.core <- tax %>% filter(row.names(tax) %in% ec.av.diff)
+
+tax.ec.av.core.r <- tax.ec.av.core %>% 
+  group_by(Rank2) %>%
+  tally()
+
+col_sum <- sum(tax.ec.av.core.r$n)
+ec.av.p <- within(tax.ec.av.core.r, p <- (n/col_sum)*100)
+
+#add fg to denote these are similar in grass and forb
+group = "fg"
+tax.ec.av.core.r <- cbind(group, tax.ec.av.core.r)
+ec.av.p <- cbind(group, ec.av.p)
+
+ec.av.core.plot <- ggplot(tax.ec.av.core.r, aes(x=Rank2, y=n)) + geom_point() + coord_flip()
+ec.av.core.plot
+
+#combine dataframes so can plot together
+combo <- rbind(tax.ec.av.core.r, tax.ec.core.r, tax.av.core.r)
+
+combop <- rbind(ec.p, av.p, ec.av.p)
+
+p <- ggplot() + geom_bar(aes(y=p, x=group, fill=Rank2), data=combop,stat="identity")# + coord_flip()
+p                           
+
+```
+
+```{r }
+require("RAM")
+
+data(otu.2, meta)
+# core OTUs
+core <- core.OTU.rank(data=list(Otu.2=otu.2), meta=meta, rank="g",
+                     meta.factor="bulkM", percent=1)
+# taxa that core OTUs assigned to
+core.Crop1 <- core$ITS1$Crop1$taxa
+core.Crop2 <- core$ITS1$Crop2$taxa
+# venn plot
+vectors <- list(Core_Crop1=core.Crop1, Core_Crop2=core.Crop2)
+group.venn(vectors=vectors, label=TRUE, cat.pos=c(330, 150),
+           lab.cex=0.7)
+## Not run: 
+group.venn(vectors=vectors, label=FALSE, cat.pos=c(330, 150),
+           lab.cex=0.7, cex=3)
+#Mowed: overlap bulk, av-rhizo, ec-rhizo
+#All 4 plots sampled are combined for each treatment
+#For each treatment: select treatment, remove meta, keep only present columns, paste into a list
+metaotu.2.bulkM <- metaotu.2[which(metaotu.2$pxt=='bulkM'),]
+metaotu.2.bulkM<-metaotu.2.bulkM[,-c(1:24)]
+head(metaotu.2.bulkM)
+metaotu.2.bulkM<-metaotu.2.bulkM[,colSums(metaotu.2.bulkM)>0]
+bulkM<-paste(colnames(metaotu.2.bulkM))
+
+metaotu.2.avM <- metaotu.2[which(metaotu.2$pxt=='avM'),]
+metaotu.2.avM<-metaotu.2.avM[,-c(1:19)]
+metaotu.2.avM<-metaotu.2.avM[,colSums(metaotu.2.avM)>0]
+avM<-paste(colnames(metaotu.2.avM))
+
+metaotu.2.ecM <- metaotu.2[which(metaotu.2$pxt=='ecM'),]
+metaotu.2.ecM<-metaotu.2.ecM[,-c(1:19)]
+metaotu.2.ecM<-metaotu.2.ecM[,colSums(metaotu.2.ecM)>0]
+ecM<-paste(colnames(metaotu.2.ecM))
+
+ 
+#The goal of the Venn Diagram is to count how many words are common between SNP_pop_1 and SNP_pop_2, between SNP_pop_1 and SNP_pop_3 and so on...
+#The venn.diagram function do it automatically and draw it! (you will get a png file in your current working directory)
+
+v<- venn.diagram(
+x = list(bulkM , avM , ecM),
+category.names = c("bulkM" , "avM " , "ecM"),
+filename = '#mowed_venn_diagramm.png',
+        output = TRUE ,
+        imagetype="png" ,
+        height = 480 , 
+        width = 480 , 
+        resolution = 300,
+        compression = "lzw",
+        lwd = 2,
+        lty = 'blank',
+        fill = c('yellow', 'purple', 'green'),
+        cex = 1,
+        fontface = "bold",
+        fontfamily = "sans",
+        cat.cex = 0.6,
+        cat.fontface = "bold",
+        cat.default.pos = "outer",
+        cat.pos = c(-27, 27, 135),
+        cat.dist = c(0.055, 0.055, 0.085),
+        cat.fontfamily = "sans",
+        rotation = 1
+        )
 ```
