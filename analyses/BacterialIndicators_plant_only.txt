@@ -1,0 +1,15 @@
+OTU	Cluster	IndVal	Prob	ta2	ta3	ta4	ta5	ta6	OTU
+Otu00003	1	0.441870014326544	0.008	Verrucomicrobia	Spartobacteria	Spartobacteria_order_incertae_sedis	Spartobacteria_family_incertae_sedis	Spartobacteria_genera_incertae_sedis	Otu00003
+Otu00024	1	0.384108559526449	0.026	Planctomycetes	Planctomycetacia	Planctomycetales	Planctomycetaceae	Singulisphaera	Otu00024
+Otu00013	2	0.358524056150056	0.045	Actinobacteria	Actinobacteria	Actinomycetales	Thermomonosporaceae	Actinoallomurus	Otu00013
+Otu00027	2	0.415830598881333	0.011	Planctomycetes	Planctomycetacia	Planctomycetales	Planctomycetaceae	Planctomyces	Otu00027
+Otu00034	3	0.455001618528101	0.033	Proteobacteria	Proteobacteria_unclassified	Proteobacteria_unclassified	Proteobacteria_unclassified	Proteobacteria_unclassified	Otu00034
+Otu00044	3	0.418012970876671	0.02	Acidobacteria	Acidobacteria_Gp1	Acidobacteria_Gp1_order_incertae_sedis	Acidobacteria_Gp1_family_incertae_sedis	Gp1	Otu00044
+Otu00023	4	0.595088377831196	0.017	Bacteria_unclassified	Bacteria_unclassified	Bacteria_unclassified	Bacteria_unclassified	Bacteria_unclassified	Otu00023
+Otu00026	4	0.341170952114571	0.041	Acidobacteria	Acidobacteria_Gp1	Acidobacteria_Gp1_order_incertae_sedis	Acidobacteria_Gp1_family_incertae_sedis	Gp1	Otu00026
+
+
+1 = avM = grass unfertilized
+2 = avMF = grass fertilized
+3 = ecM = forb unfertilized
+4 = ecMF = forb fertilized

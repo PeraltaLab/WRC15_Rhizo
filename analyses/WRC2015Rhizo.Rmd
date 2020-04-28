@@ -1,0 +1,2465 @@
+---
+title: "WRC2015"
+author: "R.B. Bledsoe and A.L. Peralta"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+question: How does long-term NPK deposition influence the diversity and composition
+  of bulk soil microbiome and the plant rhizosphere microbiome of a C3 forb and a
+  C4 grass?
+description: Impact of long-term fertilization of bulk soils on plant rhizosphere
+  micorbial communities.
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning=FALSE)
+#use to set working directory 
+knitr::opts_knit$set(root.dir="../GitHub/WRC15_Rhizo/analyses/")
+
+```
+
+```{r load packages and functions }
+getwd()
+
+#Set source R tools
+source("../bin/DiversityFunctions.R")
+source("../bin/MothurTools.R")
+
+#load req'd packages
+require("vegan")
+require("tidyverse")
+require("reshape2")
+require("ecodist")
+require("ggplot2")
+require("ade4")
+require("ape")
+require("png")
+require("picante")
+require("phyloseq")
+require("VennDiagram")
+require("lme4")
+require("multcomp")
+require("agricolae")
+require("plyr") #revalue function
+require("ggpubr")
+
+#Set Std Err and Conf Int
+se <- function(x, ...) {
+  sd(x, na.rm = TRUE)/sqrt(length(na.omit(x)))
+}
+ci <- function(x, ...) {
+  1.96 * sd(x, na.rm = TRUE)
+}
+
+set.seed(42)
+```
+
+```{r load data files and trim}
+getwd()
+#Load data files
+#Assign file names to variables
+sharedfile = "../data/wrc15rhizodenovo.17May2018.opti_mcc.unique_list.shared"
+taxfile = "../data/wrc15rhizodenovo.17May2018.opti_mcc.unique_list.0.03.cons.taxonomy"
+metafile = "../data/2015_WestResearchCampus_Sampling_Rhizo.csv"
+#metafile = "../data/WRC18_Rhizo/2015_2018_WestResearchCampus_Sampling_Summary.csv"
+
+#Read in design file
+meta <- read.csv(metafile)
+#Remove columns not needed for analysis (from example columns used for calculations)
+meta<-meta[,-c(8:10,14:16,19:20)]
+head(meta)
+#Read in OTU file
+otu <- read.otu(sharedfile)
+#tax <- read.tax(taxfile)
+#read.tax does not work and I was unable to solve issue. I use phyloseq import_mothur as a work around. 
+tax <- import_mothur(mothur_constaxonomy_file =  taxfile)
+tax.df <- as.data.frame(tax)
+tax.df <- tax.df %>%
+  rownames_to_column("otu")
+colnames(tax.df)=c("otu", "Domain","Phylum","Class", "Order","Family","Genus")
+tax.df <- tax.df %>%
+mutate(Family = str_replace(Family, "_family_incertae_sedis", ""), Genus = str_replace(Genus, "_genera_incertae_sedis", ""), Order = str_replace(Order, "_order_incertae_sedis", "")) %>%
+  mutate(Phylum = str_replace_all(Phylum,"_unclassified", ""), Order = str_replace_all(Order,"_unclassified", ""),Class = str_replace_all(Class,"_unclassified", ""), Family = str_replace_all(Family,"_unclassified", ""), Genus = str_replace_all(Genus,"_unclassified", "")) %>%
+  mutate(Phylum = str_replace_all(Phylum,"_", " "), Order = str_replace_all(Order,"_", " "),Class = str_replace_all(Class,"_", " "), Family = str_replace_all(Family,"_", " "), Genus = str_replace_all(Genus,"_", " ")) 
+  
+#tax <- tax_table(tax.df)
+#tax
+
+#Remove OTUs with less than 10 occurences across all sites
+otu.2 <- otu[, which(colSums(otu) >9)]
+#colnames(otu.2)
+#rownames(otu.2)
+
+#Remove all RP samples
+#In the original sampling I collected bulk soils, and rhizospehre soils. Soil loosley adhering to roots was shaken into a bag (RP) for DNA and soil NH4/NO3 extraction. Roots and adhering soils collected for DNA processing (RS). Removed RP from analysis for clarity and bc very similar to RS communities.
+otu.2 <-otu.2[!grepl("RP", rownames(otu.2)),]
+#rownames(otu.2)
+meta <- meta[!grepl("RP", meta$group),]
+
+#What sample has lowest read count? WRC15AVRS4MF 43811
+otu2<- colSums(t(otu.2))
+
+#otu2
+otu2[which.min(colSums(t(otu.2)))]
+otu2[which.max(colSums(t(otu.2)))]
+
+
+#graph of read counts, need to work on y axis
+c<-as.data.frame(otu.2)
+c$colsum <- colSums(t(c))
+c$group <- rownames(c)
+p<-ggplot(c, aes(x=group,y=colsum))+geom_bar(stat="identity")+coord_flip()
+p
+
+#Rarefy
+#Set min sample number
+min.N <- min(rowSums(otu.2))
+#rrarefy returns a randomly rarefied community data frame or vector of selected size
+#This is the otu set that should be used for beta diversity metrics
+otu.rare <- rrarefy(otu.2, min.N)
+```
+
+```{r rarefaction curve}
+#rarefy returns a species richness estimate in a random subsample of selected size
+##otu.rare.rich <- rarefy(x = otu.2, sample=min.N, se=T)
+#Plot rarefaction curve
+###I am not sure how to interpret this. I think it suggests that I did not capture all of the diversity? 
+##rarecurve(x = otu.2, step = 20, col="blue", cex=0.6, las=1)
+##abline(0,1,col='red')
+##text(1000,1000,"1:1",pos=2, col='red')
+
+```
+
+```{r Relative abundance and PERMANOVA }
+#transforms read counts to relative abundance
+#Using rarefied OTU dataset
+otu.2.rel <- otu.2
+for(i in 1:dim(otu.2)[1]){
+  otu.2.rel[i,] <- otu.2[i,]/sum(otu.2[i,])
+}
+
+#Combine experimental deisng meta data with OTU relative abundance data
+metaotu <- cbind(meta, otu.2.rel)
+#Where does otu data begin, remove for PERMANOVA
+#metaotu[1,20:21]
+
+#PERMANOVA with plant and Treatment as factors
+#Among all treatments plant (soil source) and treatment
+metaotu.ad <- adonis(metaotu[,-c(1:19)] ~plant*Treatment, method = "bray", data = metaotu, perm=1000, set.seed=42)
+metaotu.ad 
+
+#Tries to make a 1GB vector and fails even with 1 permutation
+#require("RVAideMemoire")
+#metaotu.ad.1 <- metaotu[which(metaotu$Treatment=='M'),]
+#p <- pairwise.perm.manova(metaotu.ad.1[,-c(1:19)],metaotu.ad.1$plant,nperm=1)
+
+#Another attempt at pairwise adonis but not sure that this method has been well worked out by the authors
+#require("pairwiseAdonis")
+#data(metaotu)
+#pairwise.adonis(metaotu[,-c(1:19)],metaotu$pxt)
+
+#Plant (soil source) is significant but the PCoA suggests that it is only significant between plant and rhizosphere and not plant functionl type (grass, forb). Because I can't run a global pairwise analysis I will run individual pairwise analysis between plant(soil sources) within a treatment. 
+#Plant (soil source) within treatment
+
+#Pairwise adonis/PERMANOVA of soil source within a treatment
+#MOWED UNFERTILIZED
+metaotu.M <- metaotu[which(metaotu$Treatment=='M'),]
+metaotu.M.GF <- metaotu.M[which(metaotu.M$plant!='bulk'),]
+metaotu.M.BG <- metaotu.M[which(metaotu.M$plant!='ec'),]
+metaotu.M.BF <- metaotu.M[which(metaotu.M$plant!='av'),]
+
+metaotu.M.GF.ad <- adonis(metaotu.M.GF[,-c(1:19)] ~ plant, method = "bray", data = metaotu.M.GF, perm=1000, set.seed=42)
+metaotu.M.GF.ad 
+
+metaotu.M.BG.ad <- adonis(metaotu.M.BG[,-c(1:19)] ~ plant, method = "bray", data = metaotu.M.BG, perm=1000, set.seed=42)
+metaotu.M.BG.ad 
+
+metaotu.M.BF.ad <- adonis(metaotu.M.BF[,-c(1:19)] ~ plant, method = "bray", data = metaotu.M.BF, perm=1000, set.seed=42)
+metaotu.M.BF.ad 
+
+#MOWED FERTILIZED
+metaotu.MF <- metaotu[which(metaotu$Treatment=='MF'),]
+metaotu.MF.GF <- metaotu.MF[which(metaotu.MF$plant!='bulk'),]
+metaotu.MF.BG <- metaotu.MF[which(metaotu.MF$plant!='ec'),]
+metaotu.MF.BF <- metaotu.MF[which(metaotu.MF$plant!='av'),]
+
+metaotu.MF.GF.ad <- adonis(metaotu.MF.GF[,-c(1:19)] ~ plant, method = "bray", data = metaotu.MF.GF, perm=1000, set.seed=42)
+metaotu.MF.GF.ad 
+
+metaotu.MF.BG.ad <- adonis(metaotu.MF.BG[,-c(1:19)] ~ plant, method = "bray", data = metaotu.MF.BG, perm=1000, set.seed=42)
+metaotu.MF.BG.ad 
+
+metaotu.MF.BF.ad <- adonis(metaotu.MF.BF[,-c(1:19)] ~ plant, method = "bray", data = metaotu.MF.BF, perm=1000, set.seed=42)
+metaotu.MF.BF.ad 
+
+###GRASS UF with GRASS F; FORB UF with FORB F
+metaotu.MB.MFB <- metaotu[which(metaotu$plant!='bulk'),]
+metaotu.MG.MFG <- metaotu[which(metaotu$plant!='av'),]
+metaotu.MF.MFF <- metaotu[which(metaotu$plant!='ec'),]
+
+metaotu.MB.MFB.ad <- adonis(metaotu.MB.MFB[,-c(1:19)] ~ Treatment, method = "bray", data = metaotu.MB.MFB, perm=1000, set.seed=42)
+metaotu.MB.MFB.ad 
+
+metaotu.MG.MFG.ad <- adonis(metaotu.MG.MFG[,-c(1:19)] ~ Treatment, method = "bray", data = metaotu.MG.MFG, perm=1000, set.seed=42)
+metaotu.MG.MFG.ad 
+
+metaotu.MF.MFF.ad <- adonis(metaotu.MF.MFF[,-c(1:19)] ~ Treatment, method = "bray", data = metaotu.MF.MFF, perm=1000, set.seed=42)
+metaotu.MF.MFF.ad 
+```
+
+```{r Calculate distance matrix and PCoA components }
+
+otu.2.rel.dist<-vegdist(otu.2.rel, method="bray")
+
+# Principal Coordinates Analysis
+otu.2.rel.dist.pcoa <- cmdscale(otu.2.rel.dist, k=3, eig=TRUE, add=FALSE)
+# Classical (Metric) Multidimensional Scaling; returns PCoA coordinates
+# eig=TRUE returns eigenvalues; k = # of dimensions to calculate
+
+explainvar1a <- round(otu.2.rel.dist.pcoa$eig[1] / sum(otu.2.rel.dist.pcoa$eig), 3) * 100
+explainvar2a <- round(otu.2.rel.dist.pcoa$eig[2] / sum(otu.2.rel.dist.pcoa$eig), 3) * 100
+sum.eiga <- sum(explainvar1a, explainvar2a)
+
+explainvar1a
+explainvar2a
+
+```
+
+```{r PCoA Plot}
+all.equal(rownames(meta), rownames(otu.2.rel))
+# Set treatments
+treat1 <- as.factor(meta$plant)
+levels(treat1) <- ordered(c("bulk","av", "ec"))
+treat2 <- as.factor(meta$Treatment)
+levels(treat2) <- c("M", "MF")
+
+pcoa.groups <- paste(meta$plant, meta$Treatment, sep = "_")
+
+pcoa.points <- data.frame(otu.2.rel.dist.pcoa$points, group = pcoa.groups)
+
+# Calculate Centroids (mean and SE)
+pcoa.L.centroids <- melt(pcoa.points, id="group", measure.vars = c("X1", "X2"))
+pcoa.centroids <- acast(pcoa.L.centroids, variable ~ group, mean)
+pcoa.centroids.se <- acast(pcoa.L.centroids, variable ~ group, se)
+pcoa.centroids.sd <- acast(pcoa.L.centroids, variable ~ group, sd)
+
+# Combine
+pcoa.cent.dataframe <- cbind(t(pcoa.centroids), t(pcoa.centroids.se))
+colnames(pcoa.cent.dataframe) <- c("V1", "V2", "V1e", "V2e")
+pcoa.cent.treats <- rownames(pcoa.cent.dataframe)
+
+pcoa.col <- as.factor(sapply(strsplit(pcoa.cent.treats, "_"), `[`, 2)) # Treatment
+pcoa.shape <- as.factor(sapply(strsplit(pcoa.cent.treats, "_"), `[`, 1))  # Plant
+
+#pcoa.shape <- ordered(c("A. virginicus", "Bulk Soil", "E. caroliniana"))
+pcoa.shape <- ordered(pcoa.shape,levels=c("bulk","av", "ec"))
+pcoa.shape <- revalue(pcoa.shape, c("bulk"="Bulk Soil", "av"="Grass", "ec"="Forb"))
+pcoa.shape <- mapvalues(pcoa.shape, from = c("bulk","av","ec"), to = c("Bulk Soil", "Grass", "Forb"))
+
+levels(pcoa.col) <- c("Unfertilized","Fertilized")
+
+#Removed RS samples becuase only have soil porperty values for RP samples
+#Run envfit to see which soil varibales are predicators 
+meta.env <- read.csv(metafile)
+meta.env <- meta.env[!grepl("RS", meta.env$type),]
+meta.env <- meta.env[,-c(1:11,13:16,18:20)]
+fit<-envfit(otu.2.rel.dist.pcoa$points, meta.env, perm=1000, na.rm=T, set.seed=42)
+fit
+
+A <-as.list(fit$vectors)
+vec<-as.data.frame(fit$vectors$arrows*sqrt(fit$vectors$r)*0.35)
+p<- as.data.frame(A$pvals)
+vec <- cbind(vec, p) 
+vec <-  subset(vec, A$pvals<=0.05)
+
+vec$parm<-rownames(vec)
+colnames(vec)
+#vec$parm<-c("Moisture","pH","C%","N%")
+
+#plot PCoA
+df1a <- as.data.frame(pcoa.cent.dataframe)
+plot1 <- ggplot(df1a, aes(x=V1, y=V2,  color=pcoa.col, shape = pcoa.shape, 
+                 group = interaction(pcoa.col, pcoa.shape))) + theme_bw() 
+
+plot1 + geom_point(aes(shape = pcoa.shape, colour = pcoa.col), size=6, stroke=1) + 
+  #removes gridlines from plot
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) + 
+  #Plot soil property vectors from envfit
+  geom_segment(data=vec, aes(x=0,xend=Dim1,y=0,yend=Dim2), size=1, 
+      arrow = arrow(length = unit(0.2, "cm")),colour="black",inherit.aes=F)+ 
+  #Label soil vectors. Using annotate because I can't figure out how to move segment text
+  #Note when re-run should double check envfit stats to make sure that soil parameters are the same
+  #geom_text(data=vec,aes(x=Dim1,y=Dim2,label=vec$parm),size=5, inherit.aes=F)+
+  annotate("text",x=-0.02,y=0.2, size=4, label="C%") +
+  annotate("text",x=0.03,y=0.2, size=4, label="N%") +
+  annotate("text",x=0,y=-.2, size=4, label="moisture") +
+  annotate("text",x=-0.1,y=-.225, size=4, label="pH") +
+  #Set error bacrs for geom_point
+  geom_errorbarh(aes(xmax=V1+V1e, xmin=V1-V1e, height=0.02), colour="black") +    
+  geom_errorbar(aes(ymax=V2+V2e, ymin=V2-V2e, width=0.02), colour="black") + 
+  #Set colors for treatments
+  scale_shape_manual(values = c(16,22,15)) +
+  scale_colour_manual(values = c("gray", "darkgreen")) +
+  #Would have liked to set shapes but couldn't get this to work
+  #scale_shape_manual(values = c(22, 21, 24)) +
+  #Sets map coordinates
+  coord_cartesian(xlim = c(-0.3, 0.3), ylim = c(-0.3, 0.3)) +
+  #Sets axis text and put border around plot
+  theme(axis.title = element_text(size=12), 
+        axis.text.x = element_text(size=12),  axis.text.y = element_text(size=12),
+        panel.border = element_rect(colour = "black", size=1.25)) +
+  #Set plot title textsize
+  theme(plot.title=element_text(size=12)) +
+  #Set legend text size
+  theme(legend.text=element_text(size=12), legend.title = element_text(size=12))+
+  #Sets size of tick marks on axis
+  theme(axis.ticks.length=unit(0.3,"cm")) + 
+  #Sets labels for plot title, axis titles, and legend headings
+  xlab("PCoA 1 (31.6%)") + ylab("PCoA 2 (22.5%)") + 
+  labs(shape = "Soil Source") +
+  labs(colour="Treatment") +
+  ggtitle("") +
+    theme(plot.margin=margin(-16.5,-1,0,0, "pt")) +
+  theme(legend.margin = margin(0, 0, -2, 0, "pt"))
+  
+#Save a copy of the plot
+ggsave("../figures/16SrRNA_WRC2015Rhizo.jpg", plot=last_plot(), device=NULL, path=NULL, scale=1, width=8.7, height=6.3, dpi=900, limitsize=TRUE)
+
+ggsave("../figures/16SrRNA_WRC2015Rhizo.tiff", plot=last_plot(), device=NULL, path=NULL, scale=1, width=6, height=4, dpi=300, limitsize=TRUE)
+
+```
+
+```{r Presence_Absence and Species richness }
+#Transform data to reflect only presence or absence ie 0 or 1
+otu.2.PA<-(otu.rare>0*1)
+#sanity check 
+#otu.2.PA[,1:5]
+#Add meta data
+metaotu.2 <- cbind(meta, otu.2.PA)
+#metaotu.2[1:15]
+#Transform True/False to 0/1 
+cols <- sapply(metaotu.2, is.logical)
+metaotu.2[,cols]<-lapply(metaotu.2[,cols],as.numeric)
+#head(metaotu.2)
+```
+
+```{r diversity metrics: richness}
+#chao1 richness index
+chao1 <- estimateR(otu.2)
+c <- as.data.frame(chao1)
+ct <- t(c)
+
+otu.div <- cbind(meta, ct)
+
+#interaction variable so can use Tukey
+i <- with(otu.div, interaction(Treatment, plant))
+
+richness.lm <- aov(S.chao1 ~ Treatment + plant + i, data = otu.div)
+plot(richness.lm)
+anova(richness.lm)
+#Get Tukey post hoc groups p<=0.01*
+t <- HSD.test(richness.lm, "plant", group=TRUE, alpha=.05)
+t
+plot(t)
+
+```
+
+```{r chao1 plot}
+#Set variable names for plot
+levels(meta$Treatment) <- c("Unfertilized", "Fertilized")
+p <- meta$plant
+p <- ordered(p,levels=c("bulk","av", "ec"))
+#p <- revalue(p, c("bulk"="Bulk Soil", "av"="Grass", "ec"="Forb"))
+#p <- mapvalues(p, from = c("bulk","av","ec"), to = c("Bulk Soil", "Grass", "Forb"))
+
+#Plot
+chao<- ggplot(otu.div, aes(x=p, y=S.chao1, fill=Treatment))  +
+  geom_boxplot(binaxis='y', stackdir='center') + scale_fill_manual(values=c("gray","darkgreen")) +
+annotate("text",x=0.55,y=6850, size =4, label="A")+
+#Set labels for Tukey groups
+annotate("text",x=1.183,y=6890, size=5, label="*") +
+annotate("text",x=2.19,y=6600, size=5, label="*") + 
+annotate("text",x=3.19,y=6250, size=5, label="*") + 
+#Set plot elements
+theme_bw()  +
+#Remove plot gridlines
+theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) + 
+#Set axis title and text properties, tick marks, and labels
+theme(axis.title = element_text(size=10),
+          axis.text=element_text(size=10), axis.text.x = element_blank(), 
+          axis.title.x=element_text(margin=margin(r=5)),
+          panel.border = element_rect(colour = "black",size=1), legend.position="none") + 
+          theme(axis.ticks.length=unit(0.3,"cm")) + 
+          labs(x = "", y = "Chao1 species richness") +
+  theme(plot.margin=margin(b=0,t=2,r=0,l=0, "pt")) +
+  theme(legend.margin = margin(0, 0, 0, -0, "pt"))
+chao
+#Save a copy of the plot
+ggsave("../figures/chao1.jpg", plot=chao, device=NULL, path=NULL, scale=1, width=6.3, height=4.4, dpi=900, limitsize=TRUE)
+
+ggsave("../figures/chao1.pdf", plot=chao, device=NULL, path=NULL, scale=1, width=6.3, height=4.4, dpi=900, limitsize=TRUE)
+
+
+```
+
+```{r diversity metrics - calculate diversity and evenness}
+# Calculate diversity metrics
+shannon <- diversity(otu.rare, "shannon")
+simp <- diversity(otu.rare, "simpson")
+invsimp <-diversity(otu.rare, "invsimpson")
+# Pielous evenness (uses presence/absence data)
+J <- shannon/log(specnumber(otu.2.PA[,-c(1:1)]))
+
+#Adding diversity fields to dataset
+otu.div$shannon <- NULL
+otu.div$J <- NULL
+otu.div$simp <- NULL
+otu.div$invsimp <- NULL
+otu.div <- cbind(otu.div,shannon, simp, invsimp)
+```
+
+```{r diversity metrics - display shannon }
+#Run richness first. interaction, levels, and treatments for plotting set there
+shannon.lm <- aov(shannon ~ Treatment + plant + i, data = otu.div)
+plot(shannon.lm)
+anova(shannon.lm)
+
+#Tukey groups at p<=0.01*
+t <- HSD.test(shannon.lm, "plant", group=TRUE, alpha=0.05)
+t
+plot(t)
+
+#p is set in richness chuck
+shan<- ggplot(otu.div, aes(x=p, y=shannon, fill=Treatment))  +
+  geom_boxplot() + scale_fill_manual(values=c( "gray","darkgreen"), labels=c("Unfertilized","Fertilized"))  + 
+scale_x_discrete( labels=c("Bulk", "Grass", "Forb"))+
+annotate("text",x=0.55,y=6.55, size =4, label="B")+
+annotate("text",x=0.81,y=6.15, size=4, label="a") +
+annotate("text",x=1.3,y=6.47, size=5, label="*") +
+annotate("text",x=1.2,y=6.5, size=4, label="a") +
+annotate("text",x=1.82,y=5.9, size=4, label="b") +
+annotate("text",x=2.3,y=6.32, size=5, label="*") +
+annotate("text",x=2.2,y=6.35, size=4, label="b") +
+annotate("text",x=2.82,y=6.1, size=4, label="b") +
+annotate("text",x=3.3,y=6.3, size=5, label="*") +
+  annotate("text",x=3.2,y=6.33, size=4, label="b") +
+#Set plot elements
+theme_bw()  +
+#Remove plot gridlines
+theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) + 
+#Set axis title and text properties, tick marks, and labels
+theme(axis.title=element_text(size=10),
+          axis.text=element_text(size=8),# axis.text.x =  element_blank(),
+          axis.title.y=element_text(margin=margin(r=3)),
+          panel.border = element_rect(colour = "black",size=1), legend.position="none") + 
+          theme(axis.ticks.length=unit(0.3,"cm")) + 
+          labs(x = "", y = "Shannon diversity H'") +
+    theme(legend.text=element_text(size=8), legend.title = element_text(size=8), 
+          legend.position = "", legend.key.size = unit(4,"line")) + 
+  theme(plot.margin=margin(0,0,-5,0, "pt"))
+
+shan
+
+ggsave("../figures/shannon.jpg", plot=shan, device=NULL, path=NULL, scale=1, width=6.3, height=4.6, dpi=900, limitsize=TRUE)
+
+ggsave("../figures/shannon.pdf", plot=shan, device=NULL, path=NULL, scale=1, width=6.3, height=4.6, dpi=900, limitsize=TRUE)
+```
+```{r diversity metrics - display simp and invsimp}
+
+simp.lm <- aov(simp ~ Treatment + plant + i, data = otu.div)
+plot(simp.lm)
+anova(simp.lm)
+#TukeyHSD(simp.lm)
+t <- HSD.test(simp.lm, "i", group=TRUE, alpha=0.01)
+t
+plot(t)
+
+invsimp.lm <- aov(invsimp ~ Treatment + plant + i, data = otu.div)
+plot(invsimp.lm)
+anova(invsimp.lm)
+#TukeyHSD(invsimp.lm)
+t <- HSD.test(invsimp.lm, "i", group=TRUE, alpha=0.01)
+t
+plot(t)
+
+isimp<- ggplot(otu.div, aes(x=p, y=invsimp, fill=Treatment))  +
+  geom_boxplot(binaxis='y', stackdir='center') + scale_fill_manual(values=c("#999999", "#000000"))
+#Groups annotated by alpha=0.05 on plot --- need to correst to alpha=0.01 
+isimp + annotate("text",x=0.81,y=105, label="bc") +
+ annotate("text",x=1.81,y=70, label="c") +
+ annotate("text",x=2.81,y=95, label="c") +
+ annotate("text",x=1.1815,y=155, label="a") +
+ annotate("text",x=2.19,y=110, label="bc") +
+   annotate("text",x=3.19,y=167, label="ab") +
+  theme_bw()  +
+    theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), axis.line 
+          =element_line(colour = "black")) + 
+    theme(axis.title=element_text(vjust=1,size=18,face="bold"),
+          axis.text=element_text(size=18), axis.text.x = element_text(vjust=0.65, hjust=0.5, 
+          size=14), panel.border = element_rect(colour = "black",size=1)) + 
+    theme(axis.ticks.length=unit(0.3,"cm")) + labs(x = "Soil Source", y = "Inverse Simpson diversity index") + 
+    theme(strip.text.x = element_text(size=14, face="bold"), strip.text.y =   
+          element_text(size=14, face="bold"), strip.background = element_rect(colour="black",
+          fill="white", size=1)) +
+   theme(legend.text=element_text(size=14), legend.title = element_text(size=14))
+```
+
+```{r diversity metrics - Pielous evennes J}
+J.lm <- aov(J ~ Treatment + plant + i , data = otu.div)
+plot(J.lm)
+anova(J.lm)
+#TukeyHSD(J.lm)
+t <- HSD.test(J.lm, "i", group=TRUE, alpha=0.01)
+t
+plot(t)
+
+even<- ggplot(otu.div, aes(x=p, y=J, fill=Treatment))  +
+  geom_boxplot() + scale_fill_manual(values=c("#999999", "#000000")) +
+#Set Tukey groups
+annotate("text",x=0.82,y=0.77, label="ab") +
+annotate("text",x=1.81,y=0.75, label="b") +
+annotate("text",x=2.81,y=0.76, label="b") +
+annotate("text",x=1.1815,y=0.80, label="a") +
+annotate("text",x=2.19,y=0.78, label="a")  + 
+annotate("text",x=3.19,y=0.80, label="a")  + 
+#Set plot properties
+theme_bw()  +
+    theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), 
+          axis.title.y=element_text(margin=margin(r=10)), 
+          axis.title.x=element_text(margin=margin(t=10))) +
+    theme(axis.title=element_text(vjust=1,size=14,face="bold"),
+          axis.text=element_text(size=14), axis.text.x = element_text(size=14), panel.border = 
+          element_rect(colour = "black",size=1)) + 
+    theme(axis.ticks.length=unit(0.3,"cm")) + labs(x = "Soil Source", y = "Pileou's eveness") + 
+    theme(legend.text=element_text(size=14), legend.title = element_text(size=14), 
+          legend.position = "bottom")
+
+even 
+
+ggsave("../figures/even.jpg", plot=even, device=NULL, path=NULL, scale=1, width=6.3, height=4.4, dpi=900, limitsize=TRUE)
+
+```
+
+```{r gene copy analysis}
+#These are the .txt files generated from running RDP classifier to estimate gene copy number
+#To keep with rest of analysis I removed RP samples
+filename <- c("2M", "2MF", "4M","4MF","6M","6MF","8M","8MF","AVRS2M", "AVRS2MF", "AVRS4M","AVRS4MF","AVRS6M","AVRS6MF","AVRS8M","AVRS8MF","ECRS2M", "ECRS2MF", "ECRS4M","ECRS4MF","ECRS6M","ECRS6MF","ECRS8M","ECRS8MF")
+
+#full list
+#filename <- c("2M", "2MF", "4M","4MF","6M","6MF","8M","8MF","AVRP2M", "AVRP2MF", "AVRP4M","AVRP4MF","AVRP6M","AVRP6MF","AVRP8M","AVRP8MF","AVRS2M", "AVRS2MF", "AVRS4M","AVRS4MF","AVRS6M","AVRS6MF","AVRS8M","AVRS8MF","ECRP2M", "ECRP2MF", "ECRP4M","ECRP4MF","ECRP6M","ECRP6MF","ECRP8M","ECRP8MF","ECRS2M", "ECRS2MF", "ECRS4M","ECRS4MF","ECRS6M","ECRS6MF","ECRS8M","ECRS8MF")
+
+#Use meta - already has RP removed, add gene copy number columns
+new_col <- c("gc_adjusted","otu_count","bac_gnc","copio_otu","copio_class","oligo_otu","oligo_class", "class_ratio","otu_ratio","copio_phylum", "oligo_phylum","phylum_ratio","copio_order", "oligo_order","order_ratio","copio_family", "oligo_family","family_ratio")
+meta[new_col] <- 0
+
+#24 is the number of filenames
+for (i in 1:24) {
+#Each file represents a sample, for each sample get gene copy number by dividing adjusted relative  abundance by otu_count for that group to get gene copy number. Get gene copy number by OTU and by class, bin as copio or oligo, sum number of oligo and copio per file/sample, and then get a copio:oligo ratio
+
+#set file path and file name. Tried using ~/GitHub/... but didn't work   
+soilfile <- paste("../data/gene_copy/", filename[i] , "_soil_hier.txt", sep="")
+adjustedfile <-  paste("../data/gene_copy/cnadjusted_", filename[i], "_soil_hier.txt", sep="")
+
+#read in files
+#Soilheir has the otu count for each taxonomic grouping
+#cnadjusted files has the adjusted otu count
+#adjusted in that RDP calculates the adjusted otu_count from the original otu_count/gene copy number of that group. This gives the otu_count with consideration thatthe number of reads for an organism could be inflated if they have many rrn gene copies within an individual.  
+soilheir <- read.delim(soilfile,  header=T)
+adjusted <- read.delim(adjustedfile, header=T)
+#Renames count columns something more friendly
+colnames(soilheir)[5] <- "otu_count"
+colnames(adjusted)[5] <- "adjusted"
+
+#Add otu_count, adjusted count, and calculated gene copy number into one dataset
+soil.adjusted <- cbind(soilheir, adjusted= adjusted$adjusted)
+soil.adjusted <- soil.adjusted %>% mutate(gnc = otu_count/adjusted)
+
+#Filter by taxonomic rank
+soil.phylum <- soil.adjusted %>% filter(rank=="phylum")
+soil.class <- soil.adjusted %>% filter(rank=="class")
+soil.order <- soil.adjusted %>% filter(rank=="order")
+soil.family <-soil.adjusted %>% filter(rank=="family")
+soil.genus <- soil.adjusted %>% filter(rank=="genus")  
+
+###To each above add average gnc and sd gnc
+
+#Using a filtered dataset from above count the number of rows that correspond to copio or oligo
+#If an otu has a gene count greater than 5 it is considered copiotroph
+#If an otu has a gene count less than 5 then it is considered oligotroph
+
+#By Phylum
+soil.p.c <- soil.phylum %>% 
+  filter(gnc >= 5) 
+  c <- nrow(soil.p.c)
+  
+soil.p.o <- soil.phylum %>% 
+  filter(gnc < 5) 
+  o <- nrow(soil.p.o)
+  
+c_to_o <- c/o
+
+#Add to copio, oligo, and ratio to meta table 
+meta <- meta %>% 
+  ###Add average gnc  and sd gnc to meta table, do for each section (phylum, class, family, genus)
+  mutate(copio_phylum = ifelse(group == paste("WRC15", filename[i], sep="") , c, copio_phylum)) %>%   
+  mutate(oligo_phylum = ifelse(group == paste("WRC15", filename[i], sep="") , o, oligo_phylum)) %>%   
+  mutate(phylum_ratio = ifelse(group == paste("WRC15", filename[i], sep="") , c_to_o, phylum_ratio))
+
+#By Class
+soil.class.c <- soil.class %>% 
+  filter(gnc >= 5) 
+  c <- nrow(soil.class.c)
+  
+soil.class.o <- soil.class %>% 
+  filter(gnc < 5) 
+  o <- nrow(soil.class.o)
+  
+c_to_o <- c/o
+
+#Add to copio, oligo, and ratio to meta table 
+meta <- meta %>% 
+  mutate(copio_class = ifelse(group == paste("WRC15", filename[i], sep="") , c, copio_class)) %>%   
+  mutate(oligo_class = ifelse(group == paste("WRC15", filename[i], sep="") , o, oligo_class)) %>%   
+  mutate(class_ratio = ifelse(group == paste("WRC15", filename[i], sep="") , c_to_o, class_ratio))
+
+#By Order
+soil.o.c <- soil.order %>% 
+  filter(gnc >= 5) 
+  c <- nrow(soil.o.c)
+  
+soil.o.o <- soil.order %>% 
+  filter(gnc < 5) 
+  o <- nrow(soil.o.o)
+  
+c_to_o <- c/o
+
+#Add to copio, oligo, and ratio to meta table 
+meta <- meta %>% 
+  mutate(copio_order = ifelse(group == paste("WRC15", filename[i], sep="") , c, copio_order)) %>%   
+  mutate(oligo_order = ifelse(group == paste("WRC15", filename[i], sep="") , o, oligo_order)) %>%   
+  mutate(order_ratio = ifelse(group == paste("WRC15", filename[i], sep="") , c_to_o, order_ratio))
+#By Order
+soil.o.c <- soil.order %>% 
+  filter(gnc >= 5) 
+  c <- nrow(soil.o.c)
+  
+soil.o.o <- soil.order %>% 
+  filter(gnc < 5) 
+  o <- nrow(soil.o.o)
+  
+c_to_o <- c/o
+
+#Add to copio, oligo, and ratio to meta table 
+meta <- meta %>% 
+  mutate(copio_order = ifelse(group == paste("WRC15", filename[i], sep="") , c, copio_order)) %>%   
+  mutate(oligo_order = ifelse(group == paste("WRC15", filename[i], sep="") , o, oligo_order)) %>%   
+  mutate(order_ratio = ifelse(group == paste("WRC15", filename[i], sep="") , c_to_o, order_ratio))
+
+#By Family
+soil.f.c <- soil.family %>% 
+  filter(gnc >= 5) 
+  c <- nrow(soil.f.c)
+  
+soil.f.o <- soil.family %>% 
+  filter(gnc < 5) 
+  o <- nrow(soil.f.o)
+  
+c_to_o <- c/o
+
+#Add to copio, oligo, and ratio to meta table 
+meta <- meta %>% 
+  mutate(copio_family = ifelse(group == paste("WRC15", filename[i], sep="") , c, copio_family)) %>%   
+  mutate(oligo_family = ifelse(group == paste("WRC15", filename[i], sep="") , o, oligo_family)) %>%   
+  mutate(family_ratio = ifelse(group == paste("WRC15", filename[i], sep="") , c_to_o, family_ratio))
+#By Order
+soil.o.c <- soil.order %>% 
+  filter(gnc >= 5) 
+  c <- nrow(soil.o.c)
+  
+soil.o.o <- soil.order %>% 
+  filter(gnc < 5) 
+  o <- nrow(soil.o.o)
+  
+c_to_o <- c/o
+
+#Add to copio, oligo, and ratio to meta table 
+meta <- meta %>% 
+  mutate(copio_order = ifelse(group == paste("WRC15", filename[i], sep="") , c, copio_order)) %>%   
+  mutate(oligo_order = ifelse(group == paste("WRC15", filename[i], sep="") , o, oligo_order)) %>%   
+  mutate(order_ratio = ifelse(group == paste("WRC15", filename[i], sep="") , c_to_o, order_ratio))
+
+#By OTU
+soil.otu.c <- soil.genus %>% 
+  filter(gnc >= 5) 
+  c <- nrow(soil.otu.c)
+  
+soil.otu.o <- soil.genus %>% 
+  filter(gnc < 5) 
+  o <- nrow(soil.otu.o)
+  
+c_to_o <- c/o
+
+meta <- meta %>% 
+  mutate(copio_otu = ifelse(group == paste("WRC15", filename[i], sep="") , c, copio_otu)) %>%   
+  mutate(oligo_otu = ifelse(group == paste("WRC15", filename[i], sep="") , o, oligo_otu)) %>%       
+  mutate(otu_ratio = ifelse(group == paste("WRC15", filename[i], sep="") , c_to_o, otu_ratio))
+
+#remove datasets generated to be tidy
+#rm(soilheir, adjusted, soil.adjusted, soil.domain, soil.phylum, soil.class, soil.genus, soil.order, #soil.class.c, soil.class.o, soil.otu.c, soil.otu.o)
+
+}
+
+```
+
+```{r visual gene copy number and stats}
+meta_sum <- meta %>% 
+  dplyr::select(Treatment, plant, copio_otu, oligo_otu)%>%
+  dplyr::group_by(Treatment, plant) %>%
+  dplyr::mutate(co_ratio=copio_otu/oligo_otu)%>%
+  dplyr::summarise(mean_c_otu=mean(copio_otu), sd_c_otu=sd(copio_otu), mean_o_otu=mean(oligo_otu), sd_o_otu=sd(oligo_otu), mean_ratio=mean(co_ratio), sd_ratio=sd(co_ratio))
+
+  
+#rownames(meta_sum) = meta$group
+
+levels(meta$Treatment) <- c("Unfertilized", "Fertilized")
+
+p <- meta$plant
+p <- ordered(p,levels=c("bulk","av", "ec"))
+p <- revalue(p, c("bulk"="Bulk Soil", "av"="Grass", "ec"="Forb"))
+p <- mapvalues(p, from = c("bulk","av","ec"), to = c("Bulk", "Grass", "Forb"))
+
+gene<- ggplot(meta, aes(x=p, y=otu_ratio, fill=Treatment))  +
+  geom_boxplot()+
+  scale_fill_manual(values=c("gray","darkgreen")) +
+scale_x_discrete( labels=c("Bulk", "Grass", "Forb"))+
+  #Tukey groups
+  annotate("text",x=0.8,y=0.24, label="a", size=3) +
+  annotate("text",x=1.81,y=0.17, label="b", size=3) +
+  annotate("text",x=2.8,y=0.19, label="b", size=3) +
+  annotate("text",x=1.2,y=0.2, label="a", size=3) +
+  annotate("text",x=2.2,y=0.19, label="b", size=3) +
+  annotate("text",x=3.2,y=0.19, label="b", size=3) +
+  #Clear gridlines from plot and set plot border
+  theme_bw()  +
+    theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), 
+         # axis.title.y=element_text(margin=margin(r=10)), 
+          axis.title.x=element_text(margin=margin(t=5, b=-10))) +
+    theme(axis.title=element_text(vjust=1,size=8),
+          axis.text=element_text(size=8), axis.text.x = element_text(size=8), panel.border = 
+          element_rect(colour = "black",size=1)) + 
+    theme(axis.ticks.length=unit(0.3,"cm")) + labs(x = "Soil Source", y = "Copiotroph:Oligotroph") + 
+    theme(legend.text=element_text(size=8), legend.title = element_text(size=8), 
+          legend.position = "bottom")+
+    theme(plot.margin=margin(0,0,0,0, "pt")) +
+  theme(legend.margin = margin(0, 0, -2, 0, "pt"))
+
+gene
+
+ggsave("../figures/gene_copy.jpg", plot=gene, device=NULL, path=NULL, scale=1, width=6, height=3, dpi=900, limitsize=TRUE)
+
+ggsave("../figures/gene_copy.tiff", plot=gene, device=NULL, path=NULL, scale=1, width=3, height=2, dpi=300, limitsize=TRUE)
+
+gene<- ggplot(meta, aes(x=p, y=copio_otu, fill=Treatment))  +
+  geom_boxplot()+
+  scale_fill_manual(values=c("gray","darkgreen")) +
+  #Tukey groups
+  annotate("text",x=0.8,y=0.24, label="a") +
+  annotate("text",x=1.81,y=0.16, label="b") +
+  annotate("text",x=2.8,y=0.18, label="ab") +
+  annotate("text",x=1.2,y=0.19, label="ab") +
+  annotate("text",x=2.2,y=0.18, label="ab") +
+  annotate("text",x=3.2,y=0.18, label="ab") +
+  #Clear gridlines from plot and set plot border
+  theme_bw()  +
+    theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), 
+          axis.title.y=element_text(margin=margin(r=10)), 
+          axis.title.x=element_text(margin=margin(t=10))) +
+    theme(axis.title=element_text(vjust=1,size=18),
+          axis.text=element_text(size=14), axis.text.x = element_text(size=14), panel.border = 
+          element_rect(colour = "black",size=1)) + 
+    theme(axis.ticks.length=unit(0.3,"cm")) + labs(x = "Soil Source", y = "Copiotroph OTU Count ") + 
+    theme(legend.text=element_text(size=18), legend.title = element_text(size=18), 
+          legend.position = "bottom")
+
+gene
+
+gene<- ggplot(meta, aes(x=p, y=oligo_otu, fill=Treatment))  +
+  geom_boxplot()+
+  scale_fill_manual(values=c("gray","darkgreen")) +
+  #Tukey groups
+  annotate("text",x=0.81,y=0.24, label="a") +
+  annotate("text",x=1.8,y=0.16, label="b") +
+  annotate("text",x=2.8,y=0.18, label="ab") +
+  annotate("text",x=1.2,y=0.19, label="ab") +
+  annotate("text",x=2.2,y=0.18, label="ab") +
+  annotate("text",x=3.2,y=0.18, label="ab") +
+  #Clear gridlines from plot and set plot border
+  theme_bw()  +
+    theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), 
+          axis.title.y=element_text(margin=margin(r=10)), 
+          axis.title.x=element_text(margin=margin(t=10))) +
+    theme(axis.title=element_text(vjust=1,size=18),
+          axis.text=element_text(size=14), axis.text.x = element_text(size=14), panel.border = 
+          element_rect(colour = "black",size=1)) + 
+    theme(axis.ticks.length=unit(0.3,"cm")) + labs(x = "Soil Source", y = "Oligotroph OTU count") + 
+    theme(legend.text=element_text(size=18), legend.title = element_text(size=18), 
+          legend.position = "bottom")
+
+gene
+
+
+
+#Set interaction, run anova, and then Tukey if plant significant
+i <- with(meta, interaction(Treatment, plant))
+gnc <- aov(log(otu_ratio) ~ Treatment + plant + i , data=meta)
+plot(gnc)
+anova(gnc)
+#Tukey groups
+t <- HSD.test(gnc, "plant", group=TRUE, alpha=0.05)
+t
+plot(t)
+
+```
+
+```{r environmental parameters}
+meta.env <- read.csv("../data/2015_2018_WestResearchCampus_Sampling_Summary.csv")
+
+meta.env <- meta.env %>% 
+  filter(year=='2015') %>%
+  filter(mowed=='m') %>%
+  filter(block=='2'|block=='4'|block=='6'|block=='8')
+
+by_plant_treatment <- meta.env %>%
+  dplyr::select(treatment, source, moist_percent, pH,n_no3_ug_gsoil, n_nh4_ug_gsoil, c_percent, n_percent, C_N) %>%
+  group_by(treatment, source) %>%
+  summarise_all(funs(mean,sd), na.rm=T)
+
+write.csv(by_plant_treatment, file="../figures/soil_properties_means.csv")
+
+i <- with(meta.env, interaction(treatment, source))
+
+nh4 <- aov(n_nh4_ug_gsoil ~ treatment+source+i, meta.env)
+plot(nh4)
+anova(nh4)
+
+
+pH <- aov(pH ~ treatment + source + i , meta.env)
+plot(pH)
+anova(pH)
+
+#ppH<- ggplot(meta.env, aes(x=treatment, y=pH, fill=source))  +
+#  geom_boxplot() + scale_fill_manual(values=c("#999999", "#000000", "333333"))
+#ppH
+
+t <- HSD.test(pH, "source" , group=TRUE, alpha=0.05)
+t
+plot(t)
+
+no3 <- aov(n_no3_ug_gsoil ~ treatment + source + i  , data=meta.env, na.rm=T) 
+plot(no3)
+anova(no3)
+
+t <- HSD.test(no3, "source" , group=TRUE, alpha=0.05)
+t
+plot(t)
+
+t <- HSD.test(no3, "i" , group=TRUE, alpha=0.05)
+t
+plot(t)
+
+#avg_temp_C <- aov(avg_temp_C ~ treatment + source + i , data=meta.env) 
+#plot(avg_temp_C)
+#anova(avg_temp_C)
+
+m_percent <- aov(log(moist_percent) ~ treatment + source + i  , data=meta.env) 
+plot(m_percent)
+anova(m_percent)
+
+t <- HSD.test(m_percent, "source" , group=TRUE, alpha=0.05)
+t
+plot(t)
+
+#TN <- aov(TN ~ treatment + source + i  , data=meta.env) 
+#plot(TN)
+#anova(TN)
+
+c_per <- aov(log(c_percent) ~ treatment + source + i , data=meta.env) 
+plot(c_per)
+anova(c_per)
+
+t <- HSD.test(c_per, "source" , group=TRUE, alpha=0.05)
+t
+plot(t)
+
+n_per <- aov(log(n_percent) ~ treatment + source + i, data=meta.env) 
+plot(n_per)
+anova(n_per)
+
+t <- HSD.test(n_per, "source" , group=TRUE, alpha=0.05)
+t
+plot(t)
+
+C_N <- aov(C_N ~ treatment + source + i , data=meta.env) 
+plot(C_N)
+anova(C_N)
+
+```
+```{r soil c percent}
+c_percent.lm <- aov(log(c_percent) ~ treatment * source, data=meta.env) 
+plot(c_percent.lm)
+anova(c_percent.lm)
+
+t <- HSD.test(c_percent.lm, "source", group=TRUE, alpha=0.05)
+t
+plot(t)
+
+cpercent<- ggplot(meta.env, aes(x=source, y=c_percent, fill=treatment))  +
+  geom_boxplot() + scale_fill_manual(values=c("gray", "darkgreen"))  + #annotate("text",x=0.82,y=6.1, label="bc") +
+#annotate("text",x=1.20,y=6.50, label="*", size=5) +
+#annotate("text",x=2.20,y=6.65, label="*", size=5) +
+#annotate("text",x=3.2,y=6.50, label="*", size=5) +
+#annotate("text",x=2.19,y=6.3, label="ab") + 
+#annotate("text",x=3.19,y=6.35, label="ab") + 
+#Set plot elements
+theme_bw()  +
+#Remove plot gridlines
+theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) + 
+#Set axis title and text properties, tick marks, and labels
+theme(axis.title=element_text(size=14),
+          axis.text=element_text(size=14, color="black"), #axis.text.x = element_blank(),  
+          axis.title.y=element_text(margin=margin(r=10)),
+          panel.border = element_rect(colour = "black",size=1), legend.position="none") + 
+          theme(axis.ticks.length=unit(0.3,"cm")) + 
+          #Set plot title textsize
+          theme(plot.title=element_text(size=14)) +
+          labs(x = "", y = "Soil C%", title="") +
+  theme(rect = element_rect(fill = "transparent")) +
+  theme(plot.background = element_rect(color=NA))
+
+cpercent
+
+ggsave("../figures/WRC15_Rhizo/pub/cpercent.jpg", plot=cpercent, device=NULL, path=NULL, scale=1, width=6.3, height=4.4, dpi=900, limitsize=TRUE, bg="transparent")
+
+ggsave("../figures/WRC15_Rhizo/pub/cpercent.pdf", plot=cpercent, device=NULL, path=NULL, scale=1, width=6.3, height=4.4, dpi=900, limitsize=TRUE, bg="transparent")
+```
+
+```{r does shannon diversity correlate with gene copy # or pH env vars}
+#Yes it appears so..
+meta.env.2 <- cbind(meta.env[,], meta[,c(20:37)])
+all <- meta.env.2 %>% 
+  #filter(treatment == "Unfertilized" | treatment == "Fertilized")
+filter(treatment == "M" | treatment == "MF")
+
+####issue with meta and meta.env
+
+all <- cbind(all, 'shannon' = otu.div$shannon)
+#all <- all[!grepl("RS", all$type),]
+
+
+gc <- ggplot(all)  +
+  geom_point(aes(x=pH, y=shannon, color=treatment), size=5)+ 
+  scale_color_manual(values=c("gray", "darkgreen", "blue")) +
+  geom_smooth(aes(x=pH, y=shannon), method=lm, se=T, color="black")+
+  annotate("text",x=4.0,y=7, size =7, label="C")+
+  theme_bw()  +
+    theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), 
+          axis.title.y=element_text(margin=margin(r=10)), 
+          axis.title.x=element_text(margin=margin(t=10))) +
+    theme(axis.title=element_text(vjust=1,size=12),
+          axis.text=element_text(size=12), axis.text.x = element_text(size=14), panel.border =
+          element_rect(colour = "black",size=1)) + 
+    theme(axis.ticks.length=unit(0.3,"cm")) + labs(x = "soil pH", y = "Shannon diversity H'") + 
+    theme(legend.text=element_text(size=12), legend.title = element_text(size=12), 
+          legend.position = "")
+
+gc
+getwd()
+ggsave("../figures/shannon_pH.jpg", plot=gc, device=NULL, path=NULL, scale=1, width=6.3, height=4.4, dpi=900, limitsize=TRUE)
+
+gc <- ggplot(all)  +
+  geom_point(aes(x=pH, y=shannon, color=treatment), size=2)+ 
+  scale_color_manual(values=c("gray", "darkgreen"), labels=c("Unfertilized", "Fertilized")) +
+  scale_fill_manual(values=c("gray", "darkgreen"), guide=FALSE) +
+  geom_smooth(aes(x=pH, y=shannon, fill=treatment), method=lm, se=T, color="black")+
+  annotate("text",x=3.90,y=6.55, size =4, label="C")+
+  theme_bw()  +
+    theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), 
+          axis.title.y=element_text(margin=margin(r=3)), 
+          axis.title.x=element_text(margin=margin(b=-10,t=5))) +
+    theme(axis.title=element_text(vjust=1,size=10),
+          axis.text=element_text(size=8), axis.text.x = element_text(size=8), panel.border =
+          element_rect(colour = "black",size=1)) + 
+    theme(axis.ticks.length=unit(0.3,"cm")) + labs(x = "Soil pH", y = "Shannon diversity H'", xlab="", ylab="", color="Treatment") + 
+    theme(legend.text=element_text(size=8), legend.title = element_text(size=8), 
+          legend.position = "bottom")  +
+  theme(plot.margin=margin(0,0,0,0, "pt")) +
+  theme(legend.margin = margin(0, 0, -5, -10, "pt"))
+
+gc
+getwd()
+ggsave("../figures/shannon_pH_separate.jpg", plot=gc, device=NULL, path=NULL, scale=1, width=6.3, height=4.4, dpi=900, limitsize=TRUE)
+
+ggsave("../figures/shannon_pH_separate.tiff", plot=gc, device=NULL, path=NULL, scale=1, width=6.3, height=4.4, dpi=300, limitsize=TRUE)
+
+g <- ggarrange(chao, shan, gc, ncol = 1, nrow = 3, heights=c(2.2,2.2,2.5), align="v")
+
+g
+
+ggsave("../figures/div_all.tiff", plot=g, device=NULL, path=NULL, scale=1, width=3, height=6.9, dpi=300, limitsize=TRUE)
+
+ggsave("../figures/div_all.jpg", plot=g, device=NULL, path=NULL, scale=1, width=3, height=8, dpi=300, limitsize=TRUE)
+
+
+
+gcfit1 <- lm(shannon ~ pH, data=all)
+anova(gcfit1)
+summary(gcfit1)
+
+monly <- all %>%
+  filter(treatment=="M")
+
+mfonly <- all %>%
+  filter(treatment=="MF")
+
+gcfit2 <- lm(shannon ~ pH, data=monly)
+anova(gcfit2)
+summary(gcfit2)
+
+gcfit3 <- lm(shannon ~ pH, data=mfonly)
+anova(gcfit3)
+summary(gcfit3)
+
+```
+```{r otu_ratio and ph}
+
+gc1 <- ggplot(all, aes(x=otu_ratio, y=shannon))  +
+  geom_point(size=5, aes(x=otu_ratio, y=shannon, color=treatment))+ scale_color_manual(values=c("gray", "darkgreen")) +
+  geom_smooth(method=lm, se=T) +
+  theme_bw()  +
+    theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), 
+          axis.title.y=element_text(margin=margin(r=10)), 
+          axis.title.x=element_text(margin=margin(t=10))) +
+    theme(axis.title=element_text(vjust=1,size=18),
+          axis.text=element_text(size=14), axis.text.x = element_text(size=14), panel.border =
+          element_rect(colour = "black",size=1)) + 
+    theme(axis.ticks.length=unit(0.3,"cm")) + labs(x = "Copiptroph:Oligotroph", y = "Shannon diversity H'") + 
+    theme(legend.text=element_text(size=14), legend.title = element_text(size=14), 
+          legend.position = "bottom")
+gc1
+
+ggsave("../figures/shannon_otu.jpg", plot=gc1, device=NULL, path=NULL, scale=1, width=6.3, height=4.4, dpi=900, limitsize=TRUE)
+
+gcfit <- lm(shannon ~ otu_ratio  , data=meta)
+anova(gcfit)
+summary(gcfit)
+
+gc <- ggplot(all)  +
+  geom_point(aes(x=otu_ratio, y=shannon, color=treatment), size=4)+ 
+  scale_color_manual(values=c("gray", "darkgreen"), labels=c("Unfertilized", "Fertilized")) +
+  scale_fill_manual(values=c("gray", "darkgreen"), guide=FALSE) +
+  geom_smooth(aes(x=otu_ratio, y=shannon, fill=treatment), method=lm, se=T, color="black")+
+  #annotate("text",x=4.0,y=7, size =7, label="C")+
+  theme_bw()  +
+    theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())+
+          #axis.title.y=element_text(margin=margin(r=10)), 
+          #axis.title.x=element_text(margin=margin(t=10))) +
+    theme(axis.title=element_text(vjust=1,size=12),
+          axis.text=element_text(size=10), axis.text.x = element_text(size=10), panel.border =
+          element_rect(colour = "black",size=1)) + 
+    theme(axis.ticks.length=unit(0.3,"cm")) + labs(x = "Soil pH", y = "Copiptroph:Oligotroph", xlab="", ylab="", color="Treatment") + 
+    theme(legend.text=element_text(size=10), legend.title = element_text(size=10), 
+          legend.position = "bottom")+
+  theme(plot.margin=margin(0,0,0,0, "pt")) +
+  theme(legend.margin = margin(0, 0, -3.5, 0, "pt"))
+
+gc
+getwd()
+ggsave("../figures/otu_ratio_pH_separate.jpg", plot=gc, device=NULL, path=NULL, scale=1, width=6.3, height=4.4, dpi=900, limitsize=TRUE)
+
+ggsave("../figures/otu_ratio_pH_separate.tiff", plot=gc, device=NULL, path=NULL, scale=1, width=4, height=3.5, dpi=300, limitsize=TRUE)
+
+gcfit2 <- lm(otu_ratio ~ pH, data=monly)
+anova(gcfit2)
+summary(gcfit2)
+
+gcfit3 <- lm(otu_ratio ~ pH, data=mfonly)
+anova(gcfit3)
+summary(gcfit3)
+
+
+
+```
+
+```{r load taxonomy data into phyloseq object}
+# Import otu and tax into phyloseq
+otu <- otu_table(t(otu.2), taxa_are_rows = T)
+tax <- import_mothur(mothur_constaxonomy_file =  taxfile)
+#rownames(meta) <- meta$group
+sample <- sample_data(meta)
+#import into phyloseq
+phy<-phyloseq(otu,tax)
+row.names(sample)=meta$group
+sample_names(sample)
+#Assign rownames to be Sample ID's
+# Merge mothurdata object with sample metadata
+meta_merge <- merge_phyloseq(phy,sample)
+
+#meta_merge
+
+#assign column names
+colnames(tax_table(meta_merge))
+colnames(tax_table(meta_merge)) <- c("Kingdom", "Phylum", "Class", "Order", "Family", "Genus")
+colnames(tax_table(meta_merge))
+rank_names(meta_merge)
+
+#Inspecting phyloseq object
+#sample_variables(meta_merge)
+#sample_names(meta_merge)
+#tax_table(meta_merge)[1:5, 2:6]
+
+treat_merge = merge_samples(meta_merge, sample_data(meta_merge)$pxt)
+otu_table(treat_merge)[1:5,1:5]
+```
+
+```{r Bacteria Indicator Species}
+#This produces a text file with otus for groups and p values
+new.data <-cbind(meta,otu.2.rel)
+library("labdsv")
+
+#new.data<- new.data %>%
+#  filter(plant=="ec")
+
+design.type <- new.data$pxt
+design.type <- factor(new.data$pxt)
+
+dataREL.2013 <- new.data[,-c(1:37)]
+head(dataREL.2013)
+set.seed(42)
+dataREL <- dataREL.2013[, colSums(dataREL.2013) > 0.05]
+bac.ind <- indval(dataREL, clustering =  design.type, numitr=1000, set.seed(42))
+levels(design.type)
+design.type
+summary(bac.ind)
+
+inds <- which(bac.ind$pval <= 0.05)
+bac.indicators <- as.data.frame(matrix(NA, nrow = length(inds), ncol = 4))
+colnames(bac.indicators) <- c("OTU", "Cluster", "IndVal", "Prob")
+
+bac.indicators$OTU <- names(inds)
+bac.indicators$Cluster <- bac.ind$maxcls[inds]
+bac.indicators$IndVal <- bac.ind$indcls[inds]
+bac.indicators$Prob <- bac.ind$pval[inds]
+
+otu.tax<-as.data.frame(tax)
+suffix<- 1:nrow(otu.tax)
+ps <- sprintf("Otu%05d",suffix)
+otu.tax$OTU<-ps
+
+ind.tax <- otu.tax[which(as.character(otu.tax$OTU) %in% bac.indicators$OTU), ]
+ind.tax <- ind.tax[match(ind.tax$OTU, bac.indicators$OTU), ]
+
+#indicator.bac <- cbind(bac.indicators[-c(1:4),], ind.tax[, -c(1)])
+indicator.bac <- cbind(bac.indicators, ind.tax[, -c(1)])
+
+indicator.bac <- indicator.bac[order(as.numeric(indicator.bac$Cluster)), ]
+
+table(indicator.bac$Cluster)
+table(indicator.bac$Phylum)
+table(indicator.bac$Cluster)
+levels(design.type)
+
+# Export Bacteria Indicator Table
+write.table(indicator.bac, "BacterialIndicators_all.txt",
+            sep="\t", row.names = F, quote = F)
+
+#From what I can tell by comparing both methods of indicator analysis the second "cluster" 1, 2, 3, ... is the design.type in alphabetical order. So 1 = avM, 2 = avMF, 3 = bulkM, 4 = bulkMF, 5 = ecM, 6=ecMF
+  
+```
+
+
+```{r visualize indicator taxa with heat map}
+ind.tax.i <- ind.tax %>% dplyr::rename(otu=OTU) %>%
+  drop_na()
+
+tax.df.otu <- tax.df %>%
+  add_rownames(var="otu")
+
+head(tax.df.otu)
+
+ind.tax.i.c <- metaotu %>%
+  dplyr::select_(.dots = ind.tax.i$otu, "group", "Treatment", "plant") %>%
+  gather(otu, otu.cnt, -group, -Treatment, -plant) %>%
+  #now I need taxa
+  left_join(tax.df.otu, by="otu") 
+ind.tax.i.c <- ind.tax.i.c %>%
+  add_column(xlabel2=substr(ind.tax.i.c$otu, start = 6, stop =  8)) %>%
+  unite("xlabel", "xlabel2", "Genus", sep="_", remove=FALSE)%>%
+  mutate(otu_cnt=otu.cnt*100)
+
+###Double check what is being displayed as relative abundance###
+
+#ind.tax.i.c <-as.data.frame(ind.tax.i.c)
+#m<-min(ind.tax.i.c$otu.cnt)
+#m
+#x<-max(ind.tax.i.c$otu.cnt)
+#x
+
+#s<-ind.tax.i.c[,-c(45:48)]
+#v <-ind.tax.i.c[which.min(rowSums(t(s)))]
+#v
+
+
+###now I have sample and relative abundances of otus in just the indicator taxa otus
+#Heatmap---
+genus <- ind.tax.i.c$Genus
+i <- with(ind.tax.i.c, interaction(Treatment, plant))
+
+ind.tax.i.c$i<-factor(i, levels=c('M.bulk','MF.bulk','M.av','MF.av','M.ec', 'MF.ec'))
+ 
+#i <- factor(i, levels=c("2.1", "2.2", "3.1", "3.2", "1.1", "1.2"), labels=c("bm","bmf","ecm","ecmf","avm","avmf"))
+ind.tax.i.heat <- ggplot(ind.tax.i.c, aes(xlabel, i)) +
+  scale_y_discrete(labels=c('-bulk', '+bulk', '-grass', '+grass', '-forb', '+forb'))+
+  #scale_x_discrete(labels=g$xlabel)+
+  geom_tile(aes(fill = otu.cnt), color="white") + 
+ scale_fill_gradientn(colors=c("khaki", "green", "blue", "black")) +
+  #scale_y_continuous(sec.axis=sec_axis(~., breaks = 1:length(genus), labels=genus))+
+  labs(fill = "Relative \n Abundance", x="", y="Treatment")+
+  theme(legend.position = "right") +
+  theme_bw()  +
+    theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), 
+          axis.title.y=element_text(margin=margin(r=10)), 
+          axis.title.x=element_text(margin=margin(t=10))) +
+    theme(axis.title=element_text(vjust=1,size=12),
+          axis.text=element_text(size=12), axis.text.x = element_text(size=12))+
+    theme(legend.text=element_text(size=12), legend.title = element_text(size=12), 
+          legend.position = "right")+
+    coord_flip()+
+  #-bulk
+  annotate("text",x=2.5,y=1, size =6, color="white", label="*") +
+  annotate("text",x=9.5,y=1, size =6, label="*") +
+  annotate("text",x=10.5,y=1, size =6, label="*")+
+  annotate("text",x=12.5,y=1, size =6, label="*")+
+  annotate("text",x=13.5,y=1, size =6, label="*")+
+  annotate("text",x=16.5,y=1, size =6, label="*")+
+  annotate("text",x=22.5,y=1, size =6, label="*")+
+  annotate("text",x=23.5,y=1, size =6, label="*")+
+  annotate("text",x=24.5,y=1, size =6, label="*")+
+  annotate("text",x=26.5,y=1, size =6, label="*")+
+  annotate("text",x=30.5,y=1, size =6, label="*")+
+  annotate("text",x=31.5,y=1, size =6, label="*")+
+  annotate("text",x=16.5,y=1, size =6, label="*")+
+  #+bulk
+  annotate("text",x=3.5,y=2, size =6, label="*")+
+  annotate("text",x=4.5,y=2, size =6, label="*")+
+  annotate("text",x=20.5,y=2, size =6, label="*")+
+  annotate("text",x=21.5,y=2, size =6, label="*")+
+  #-grass
+  annotate("text",x=1.5,y=3, size =6, label="*")+
+  annotate("text",x=6.5,y=3, size =6, label="*")+
+  annotate("text",x=14.5,y=3, size =6, label="*")+
+  annotate("text",x=17.5,y=3, size =6, label="*")+
+  annotate("text",x=25.5,y=3, size =6, label="*")+
+  annotate("text",x=28.5,y=3, size =6, label="*")+
+  #+grass
+  annotate("text",x=8.5,y=4, size =6, label="*")+
+  annotate("text",x=18.5,y=4, size =6, label="*")+
+  #-forb
+  annotate("text",x=11.5,y=5, size =6, label="*")+
+  annotate("text",x=15.5,y=5, size =6, label="*")+
+  annotate("text",x=19.5,y=5, size =6, label="*")+
+  #+forbs
+  annotate("text",x=5.5,y=6, size =6, label="*")+
+  annotate("text",x=7.5,y=6, size =6, label="*")
+ind.tax.i.heat
+
+ggsave("../figures/ind.tax.g.heat.good.jpg", plot=ind.tax.i.heat, device=NULL, path=NULL, scale=1, width=9, height=6.8, dpi=900, limitsize=TRUE)
+
+```
+
+```{r visualize indicator taxa -by Class- with heat map}
+###indicator taxa is summed regardless if it is an indicator taxa for that treatment
+###However most indicator otu are only calssifiable down to class.
+###Select otu columns found in indicator taxa list along with treatment and plant 
+ind.tax.i.b <- metaotu %>%
+  dplyr::select_(.dots = ind.tax.i$otu, "Treatment", "plant")
+
+ind.tax.i.c <- ind.tax.i.b %>% 
+  #Transform... otu rows, otu.cnt is relative abund, keep design items
+  gather(otu, otu.cnt, -Treatment, -plant)%>%
+  #now I need taxa
+  left_join(tax.df.otu, by="otu") %>%
+  group_by(Treatment, plant, Family) %>%
+  dplyr::summarise(sumAbund=sum(otu.cnt))
+  #unite("xlabel", c("otu", "Genus"), sep="_", remove=FALSE)
+
+###now I have sample and relative abundances of otus in just the indicator taxa otus
+#Heatmap---
+i <- with(ind.tax.i.c, interaction(Treatment, plant))
+#i <- factor(i, levels=c("2.1", "2.2", "3.1", "3.2", "1.1", "1.2"), labels=c("bm","bmf","ecm","ecmf","avm","avmf"))
+ind.tax.i.heat <- ggplot(ind.tax.i.c, aes(Family, i)) +
+  geom_tile(aes(fill = sumAbund), color="white") + 
+ scale_fill_gradientn(colors=c("khaki", "green", "blue", "black")) +
+  #scale_y_continuous(sec.axis=sec_axis(~., breaks = 1:length(genus), labels=genus))+
+  labs(fill = "Relative \n Abundance")+
+  theme(legend.position = "right") +
+  coord_flip()
+ind.tax.i.heat
+
+ggsave("../figures/ind.tax.class.heat.good.jpg", plot=ind.tax.i.heat, device=NULL, path=NULL, scale=1, width=8, height=12, dpi=900, limitsize=TRUE)
+
+```
+
+```{r visualize core forb with heat map}
+ind.tax.i.high <- metaotu %>%
+  filter(plant=="ec") %>% 
+  dplyr::select_(.dots = forb.list, "Treatment") %>%
+  gather(otu, "otu.cnt", -Treatment) %>%
+  filter(otu.cnt >= 0.001)
+ 
+###Need to try and get number of otus in each group... ###
+#tax.df$otu <- rownames(tax.df)
+ind.tax.i.high <- ind.tax.i.high %>%
+    group_by(otu,Treatment) %>%
+    dplyr::summarise(avgAbund=mean(otu.cnt))%>%
+    #mutate(avgAbund = replace(avgAbund, avgAbund<0.001, NA))%>%
+    left_join(tax.df, by="otu") 
+
+forb <- ind.tax.i.high
+
+write.csv(x=forb, file="../figures/forb.csv")
+
+min(ind.tax.i.high$avgAbund)
+max(ind.tax.i.high$avgAbund)
+
+ind.tax.i.high.distinct <- ind.tax.i.high %>% 
+  distinct(otu)
+
+ind.tax.i.low <- metaotu %>%
+  filter(plant=="ec") %>% 
+  dplyr::select_(.dots = forb.list, "Treatment") %>%
+  gather(otu, "otu.cnt", -Treatment) %>%
+  filter(otu.cnt < 0.0001)
+
+ind.tax.i.low <- ind.tax.i.low %>%
+    group_by(otu,Treatment) %>%
+    dplyr::summarise(avgAbund=mean(otu.cnt))%>%
+    #filter(avgAbund < 0.0025)%>%
+    left_join(tax.df, by="otu") 
+
+ind.tax.i.low.distinct <- ind.tax.i.low %>% 
+  distinct(otu)
+require("RColorBrewer")
+i <- with(ind.tax.i.high, interaction(Treatment))
+#i <- factor(i, levels=c("2.1", "2.2", "3.1", "3.2", "1.1", "1.2"), labels=c("bm","bmf","ecm","ecmf","avm","avmf"))
+ind.tax.i.heat.forb <- ggplot(ind.tax.i.high, aes(Family, Treatment)) +
+  geom_tile(aes(fill = (avgAbund*100)), color="white") +
+  
+  scale_fill_gradientn(colours = terrain.colors(5))+#, limits=c(0.001,0.005), oob=scales::squish) +
+   scale_y_discrete(labels=c("Unfertilized", "Fertilized"))+
+  labs(fill = "Relative \n Abundance %", title="Forb Core Taxa >0.1%", x="Family", y="Treatment" )+
+  theme_bw()  +
+    theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), 
+          #axis.title.y=element_text(margin=margin(r=10)), 
+          axis.title.x=element_text(margin=margin(t=5))) +
+    theme(axis.title=element_text(vjust=1,size=10),
+          axis.text=element_text(size=8), axis.text.x = element_text(size=8))+
+    theme(legend.text=element_text(size=8), legend.title = element_text(size=8), 
+          legend.position = "right", plot.title=element_text(size=10, margin=margin(0,0,0,0)))+
+  coord_flip()+
+ annotate("text",x=14.7,y=1, size=6, label="*") +
+  annotate("text",x=4.7,y=2, size=6, label="*") +
+  annotate("text",x=0.9,y=1, size=6, label="*") +
+  annotate("text",x=0.9,y=2, size=6, label="*")+
+  theme(plot.margin=margin(0,0,0,0, "pt")) +
+  theme(legend.margin = margin(0, 0, 0, 0, "cm"))
+
+ind.tax.i.heat.forb
+
+ggsave("../figures/forb.high.heat.good.jpg", plot=ind.tax.i.heat.forb, device=NULL, path=NULL, scale=1, width=9, height=6.8, dpi=900, limitsize=TRUE)
+
+ggsave("../figures/forb.high.heat.good.tiff", plot=ind.tax.i.heat.forb, device=NULL, path=NULL, scale=1, width=3.75, height=3, dpi=300, limitsize=TRUE)
+```
+
+```{r more forb plots}
+###BOX PLOTS
+ind.tax.i.heat <- ggplot(ind.tax.i.high, aes(Family, (avgAbund*100))) +
+  geom_boxplot(aes(fill=Treatment))+
+  coord_flip()+
+  scale_fill_manual(values=c("gray", "darkgreen"), labels=c("Unfertilized", "Fertilized")) +
+  labs(fill = "", x="Family", y="% Relative Abundance", title="(B) Forb Rhizosphere") + 
+  theme_bw()+
+    theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), 
+          axis.title.y=element_text(margin=margin(r=10)), 
+          axis.title.x=element_text(margin=margin(t=10))) +
+    theme(axis.title=element_text(vjust=1,size=14),
+          axis.text=element_text(size=14), axis.text.x = element_text(size=14))+
+    theme(legend.text=element_text(size=14), legend.title = element_text(size=14), 
+          legend.position = "bottom")+
+  
+ annotate("text",x=9.7,y=0.075, size=5, label="*") +
+  annotate("text",x=4.7,y=0.075, size=5, label=" **") +
+  annotate("text",x=1.9,y=0.075, size=5, label=" *,**")
+
+
+ind.tax.i.heat
+
+ggsave("../figures/forb.high.boxplot.jpg", plot=ind.tax.i.heat, device=NULL, path=NULL, scale=1, width=9, height=6.8, dpi=900, limitsize=TRUE)
+
+
+i <- with(ind.tax.i.low, interaction(Treatment))
+#i <- factor(i, levels=c("2.1", "2.2", "3.1", "3.2", "1.1", "1.2"), labels=c("bm","bmf","ecm","ecmf","avm","avmf"))
+ind.tax.i.heat <- ggplot(ind.tax.i.low, aes(Family, Treatment)) +
+  geom_tile(aes(fill = avgAbund), color="white") + 
+  scale_fill_gradientn(colors=c("white","khaki", "green", "blue", "black")) +
+  #scale_y_continuous(sec.axis=sec_axis(~., breaks = 1:length(genus), labels=genus))+
+  labs(fill = "Relative \n Abundance")+
+  theme(legend.position = "right") +
+  coord_flip() 
+  #theme(panel.background=element_rect(fill="blue", colour="blue"))
+ind.tax.i.heat
+
+ggsave("../figures/forb.low.heat.good.jpg", plot=ind.tax.i.heat, device=NULL, path=NULL, scale=1, width=8, height=12, dpi=900, limitsize=TRUE)
+
+```
+
+
+```{r visualize core grass with heat map}
+ind.tax.i.high <- metaotu %>%
+  filter(plant=="av") %>% 
+  dplyr::select_(.dots = grass.list, "Treatment") %>%
+  gather(otu, "otu.cnt", -Treatment) %>%
+  filter(otu.cnt >= 0.00075)
+
+ind.tax.i.high <- ind.tax.i.high %>%
+    group_by(otu,Treatment) %>%
+    dplyr::summarise(avgAbund=mean(otu.cnt))%>%
+    #filter(otu.cnt >= 0.0005)%>%
+    left_join(tax.df, by="otu") 
+
+grass <- ind.tax.i.high
+write.csv(x=grass, file="../figures/grass.csv")
+
+both <- rbind(forb, grass)
+
+min(ind.tax.i.high$avgAbund)
+max(ind.tax.i.high$avgAbund)
+
+ind.tax.i.high.distinct <- ind.tax.i.high %>% 
+  distinct(otu)
+
+
+
+ind.tax.i.low <- metaotu %>%
+  filter(plant=="av") %>% 
+  dplyr::select_(.dots = grass.list, "Treatment") %>%
+  gather(otu, "otu.cnt", -Treatment) %>%
+  filter(otu.cnt < 0.0005)
+
+ind.tax.i.low <- ind.tax.i.low %>%
+    group_by(otu,Treatment) %>%
+    dplyr::summarise(avgAbund=mean(otu.cnt))%>%
+    #filter(avgAbund < 0.0005)%>%
+    left_join(tax.df, by="otu") 
+
+ind.tax.i.low.distinct <- ind.tax.i.low %>% 
+  distinct(otu)
+
+i <- with(ind.tax.i.high, interaction(Treatment))
+#i <- factor(i, levels=c("2.1", "2.2", "3.1", "3.2", "1.1", "1.2"), labels=c("bm","bmf","ecm","ecmf","avm","avmf"))
+ind.tax.i.heat.grass <- ggplot(ind.tax.i.high, aes(Family, Treatment)) +
+  geom_tile(aes(fill = (avgAbund*100)), color="white") + 
+  scale_fill_gradientn(colours = terrain.colors(5))+
+  #scale_fill_gradientn(colors=c("khaki", "green", "blue", "black")) +
+  scale_y_discrete(labels=c("Unfertilized", "Fertilized"))+
+  labs(fill = "Relative \n Abundance %", title="Grass Core Taxa >0.075%", x="Family", y="Treatment" )+ theme_bw()+
+    theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), 
+          #axis.title.y=element_text(margin=margin(r=10)), 
+          axis.title.x=element_text(margin=margin(t=5))) +
+    theme(axis.title=element_text(vjust=1,size=10),
+          axis.text=element_text(size=8), axis.text.x = element_text(size=8))+
+    theme(legend.text=element_text(size=8), legend.title = element_text(size=8), 
+          legend.position = "right", plot.title=element_text(size=10, margin=margin(0,0,0,0)))+
+  coord_flip() +
+  annotate("text",x=13.7,y=1, size=5, label="*") +
+  annotate("text",x=13.7,y=2, size=5, label="*") +
+  annotate("text",x=17.7,y=1, size=5, label="*") +
+  annotate("text",x=19.7,y=2, size=5, label="*") +
+  theme(plot.margin=margin(0,0,0,0, "pt")) +
+  theme(legend.margin = margin(0, 0, 0, 0, "cm"))
+  #theme(panel.background=element_rect(fill="blue", colour="blue"))
+ind.tax.i.heat.grass
+
+ggsave("../figures/grass.high.heat.good.jpg", plot=ind.tax.i.heat.grass, device=NULL, path=NULL, scale=1, width=9, height=6.8, dpi=900, limitsize=TRUE)
+
+ggsave("../figures/grass.high.heat.good.tiff", plot=ind.tax.i.heat.grass, device=NULL, path=NULL, scale=1, width=3.75, height=3, dpi=300, limitsize=TRUE)
+#grid.arrange(ind.tax.i.heat.grass, ind.tax.i.heat.forb, nrow=2,  heights=c(4.5,4.5))
+```
+
+```{r more grass plots}
+###BOX PLOTS
+ind.tax.i.heat <- ggplot(ind.tax.i.high, aes(Family, (avgAbund*100))) +
+  geom_boxplot(aes(fill=Treatment))+
+  coord_flip()+
+  scale_fill_manual(values=c("gray", "darkgreen"), labels=c("Unfertilized", "Fertilized")) +
+  labs(fill = "", x="Order", y="", title="(A) Grass Rhizosphere") + 
+  theme_bw()+
+    theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), 
+          axis.title.y=element_text(margin=margin(r=10)), 
+          axis.title.x=element_text(margin=margin(t=10))) +
+    theme(axis.title=element_text(vjust=1,size=14),
+          axis.text=element_text(size=14), axis.text.x = element_text(size=14))+
+    theme(legend.text=element_text(size=14), legend.title = element_text(size=14), 
+          legend.position = "")+
+  
+ annotate("text",x=10.8,y=0.075, size=5, label="*") +
+  annotate("text",x=5.9,y=0.075, size=5, label=" *,**") 
+
+
+ind.tax.i.heat
+
+ggsave("../figures/grass.high.boxplot.jpg", plot=ind.tax.i.heat, device=NULL, path=NULL, scale=1, width=9, height=6.8, dpi=900, limitsize=TRUE)
+
+
+i <- with(ind.tax.i.low, interaction(Treatment))
+#i <- factor(i, levels=c("2.1", "2.2", "3.1", "3.2", "1.1", "1.2"), labels=c("bm","bmf","ecm","ecmf","avm","avmf"))
+ind.tax.i.heat <- ggplot(ind.tax.i.low, aes(Family, Treatment)) +
+  geom_tile(aes(fill = avgAbund)) + 
+  scale_fill_gradientn(colors=c("khaki", "green", "blue", "black")) +
+  #scale_y_continuous(sec.axis=sec_axis(~., breaks = 1:length(genus), labels=genus))+
+  labs(fill = "Relative \n Abundance %", x="", y="")+
+  theme(legend.position = "") +
+  coord_flip() 
+  #theme(panel.background=element_rect(fill="blue", colour="blue"))
+ind.tax.i.heat
+
+ggsave("../figures/grass.low.heat.good.jpg", plot=ind.tax.i.heat, device=NULL, path=NULL, scale=1, width=9, height=6, dpi=900, limitsize=TRUE)
+
+```
+```{r visualize core bulk with heat map}
+ind.tax.i.high <- metaotu %>%
+  filter(plant=="bulk") %>% 
+  dplyr::select_(.dots = bulk.list, "Treatment") %>%
+  gather(otu, "otu.cnt", -Treatment) %>%
+  filter(otu.cnt >= 0.005)
+
+class(bulk.list)
+
+ind.tax.i.high <- ind.tax.i.high %>%
+    group_by(otu,Treatment) %>%
+    dplyr::summarise(avgAbund=mean(otu.cnt))%>%
+    #filter(otu.cnt >= 0.0005)%>%
+    left_join(tax.df, by="otu") 
+
+min(ind.tax.i.high$avgAbund)
+max(ind.tax.i.high$avgAbund)
+
+ind.tax.i.high.distinct <- ind.tax.i.high %>% 
+  distinct(otu)
+
+ind.tax.i.low <- metaotu %>%
+  filter(plant=="av") %>% 
+  dplyr::select_(.dots = bulk.list, "Treatment") %>%
+  gather(otu, "otu.cnt", -Treatment) %>%
+  filter(otu.cnt < 0.005)
+
+ind.tax.i.low <- ind.tax.i.low %>%
+    group_by(otu,Treatment) %>%
+    dplyr::summarise(avgAbund=mean(otu.cnt))%>%
+    #filter(avgAbund < 0.0005)%>%
+    left_join(tax.df.otu, by="otu") 
+
+ind.tax.i.low.distinct <- ind.tax.i.low %>% 
+  distinct(otu)
+
+i <- with(ind.tax.i.high, interaction(Treatment))
+#i <- factor(i, levels=c("2.1", "2.2", "3.1", "3.2", "1.1", "1.2"), labels=c("bm","bmf","ecm","ecmf","avm","avmf"))
+ind.tax.i.heat <- ggplot(ind.tax.i.high, aes(Order, Treatment)) +
+  geom_tile(aes(fill = (avgAbund*100)), color="white") + 
+  scale_fill_gradientn(colors=c("khaki", "green", "blue", "black")) +
+  scale_y_discrete(labels=c("Unfertilized", "Fertilized"))+
+  #scale_y_continuous(sec.axis=sec_axis(~., breaks = 1:length(genus), labels=genus))+
+  labs(fill = "Relative \n Abundance %", x="Class", y="Treatment", title="Bulk Soil OTUs") + theme_bw()+
+    theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), 
+          axis.title.y=element_text(margin=margin(r=10)), 
+          axis.title.x=element_text(margin=margin(t=10))) +
+    theme(axis.title=element_text(vjust=1,size=16),
+          axis.text=element_text(size=14), axis.text.x = element_text(size=14))+
+    theme(legend.text=element_text(size=14), legend.title = element_text(size=14), 
+          legend.position = "right")+
+  coord_flip() 
+  #theme(panel.background=element_rect(fill="blue", colour="blue"))
+ind.tax.i.heat
+
+ggsave("../figures/bulk.high.heat.good.jpg", plot=ind.tax.i.heat, device=NULL, path=NULL, scale=1, width=9, height=6.8, dpi=900, limitsize=TRUE)
+
+###BOX PLOTS
+ind.tax.i.heat <- ggplot(ind.tax.i.high, aes(Order, (avgAbund*100))) +
+  geom_boxplot(aes(fill=Treatment))+
+  coord_flip()+
+  scale_fill_manual(values=c("gray", "darkgreen"), labels=c("Unfertilized", "Fertilized")) +
+  labs(fill = "Treatment", x="Order", y="% Relative Abundance", title="Bulk Soil") + 
+  theme_bw()+
+    theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())+
+          #axis.title.y=element_text(margin=margin(r=10)), 
+          #axis.title.x=element_text(margin=margin(t=10))) +
+    theme(axis.title=element_text(vjust=1,size=10),
+          axis.text=element_text(size=10), axis.text.x = element_text(size=10))+
+    theme(legend.text=element_text(size=10), legend.title = element_text(size=10), 
+          legend.position = "bottom") +
+    theme(plot.title = element_text(size=10)) +
+  annotate("text",x=16.8,y=0.25, size=5, label="*") +
+  annotate("text",x=15.8,y=0.25, size=5, label="**") +
+ annotate("text",x=14.7,y=0.25, size=5, label="*") +
+  annotate("text",x=13.7,y=0.25, size=5, label="*") +
+   annotate("text",x=6.7,y=0.25, size=5, label="**") +
+  theme(plot.margin=margin(0,0,0,0, "pt")) +
+  theme(legend.margin = margin(0, 0, 0, 0, "cm"))
+
+ind.tax.i.heat
+
+ggsave("../figures/bulk.high.boxplot.jpg", plot=ind.tax.i.heat, device=NULL, path=NULL, scale=1, width=9, height=6.8, dpi=900, limitsize=TRUE)
+
+ggsave("../figures/bulk.high.boxplot.tiff", plot=ind.tax.i.heat, device=NULL, path=NULL, scale=.75, width=6, height=6, dpi=300, limitsize=TRUE)
+
+i <- with(ind.tax.i.low, interaction(Treatment))
+#i <- factor(i, levels=c("2.1", "2.2", "3.1", "3.2", "1.1", "1.2"), labels=c("bm","bmf","ecm","ecmf","avm","avmf"))
+ind.tax.i.heat <- ggplot(ind.tax.i.low, aes(Family, Treatment)) +
+  geom_tile(aes(fill = avgAbund)) + 
+  scale_fill_gradientn(colors=c("khaki", "green", "blue", "black")) +
+  #scale_y_continuous(sec.axis=sec_axis(~., breaks = 1:length(genus), labels=genus))+
+  labs(fill = "Relative \n Abundance %", x="", y="")+
+  theme(legend.position = "") +
+  coord_flip() 
+  #theme(panel.background=element_rect(fill="blue", colour="blue"))
+ind.tax.i.heat
+
+ggsave("../figures/bulk.low.heat.good.jpg", plot=ind.tax.i.heat, device=NULL, path=NULL, scale=1, width=9, height=6, dpi=900, limitsize=TRUE)
+
+```
+
+```{r visualize Cosmopolitan taxa- with heat map}
+
+ind.tax.i.b <- metaotu %>%
+  dplyr::select_(.dots = core.all$otu, "Treatment", "plant")
+
+ind.tax.i.c <- ind.tax.i.b %>% 
+  #Transform... otu rows, otu.cnt is relative abund, keep design items
+  gather(otu, otu.cnt, -Treatment, -plant)%>%
+  filter(otu.cnt >= 0.004)%>%
+  ##distinct(otu)
+  #now I need taxa
+  left_join(tax.df.otu, by="otu") %>%
+  group_by(Treatment, plant, Family) %>%
+  #filter(Family=="Planctomycetaceae")%>%
+  dplyr::summarise(avgAbund=mean(otu.cnt))
+  
+  
+min(ind.tax.i.c$avgAbund)
+max(ind.tax.i.c$avgAbund)
+
+ind.tax.i.c.distinct <- ind.tax.i.c %>% 
+  distinct(otu)
+
+###now I have sample and relative abundances of otus in just the indicator taxa otus
+#Heatmap---
+i <- with(ind.tax.i.c, interaction(Treatment, plant))
+
+
+ind.tax.i.c$i<-factor(i, levels=c('M.bulk','MF.bulk','M.av','MF.av','M.ec', 'MF.ec'))
+#i <- factor(i, levels=c("2.1", "2.2", "3.1", "3.2", "1.1", "1.2"), labels=c("bm","bmf","ecm","ecmf","avm","avmf"))
+ind.tax.i.heat <- ggplot(ind.tax.i.c, aes(Family, i)) +
+  geom_tile(aes(fill = avgAbund), color="white") + 
+  scale_y_discrete(labels=c('-bulk', '+bulk', '-grass', '+grass', '-forb', '+forb'))+
+  scale_fill_gradientn(colors=c("khaki", "green", "blue", "black"))+#,limits=c(0.0025,0.045))+
+  #, oob=squish) +
+  labs(fill = "Relative \n Abundance", y="Treatment", x="Family")+
+  theme_bw()+
+    theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), 
+          axis.title.y=element_text(margin=margin(r=10)), 
+          axis.title.x=element_text(margin=margin(t=10))) +
+    theme(axis.title=element_text(vjust=1,size=16),
+          axis.text=element_text(size=14), axis.text.x = element_text(size=14))+
+    theme(legend.text=element_text(size=14), legend.title = element_text(size=14), 
+          legend.position = "right")+
+  coord_flip()
+ind.tax.i.heat
+
+ggsave("../figures/cosmo.heat.good.jpg", plot=ind.tax.i.heat, device=NULL, path=NULL, scale=1, width=9, height=6.8, dpi=900, limitsize=TRUE)
+
+```
+
+```{r indicator species bubble plot}
+require("stringr")
+
+otu.2.meta <- as.data.frame(cbind(otu.2, meta))
+rownames(otu.2.meta)
+meta$group
+otu.2.meta$group <- meta$pxt
+
+d <- select_(otu.2.meta, "Otu00035","Otu00049","Otu00122", "Otu00089", "Otu00092" ,"Otu00129", "Otu00039" ,"Otu00063", "Otu00064", "Otu00104", "Otu00016","Otu00057", "Otu00094" ,"Otu00004", "Otu00024", "Otu00034", "Otu00076","Otu00008", "Otu00021" ,"Otu00027", "Otu00071", "group") 
+
+d <-aggregate(d, by=list(d$group), FUN=mean, na.rm=TRUE)
+rownames(d) = d$Group.1 
+d <- d[,-c(1,23)]
+
+d.rel <- d
+for(i in 1:dim(d)[1]){
+  d.rel[i,] <- d[i,]/sum(d[i,])
+}
+
+d.rel$group <- rownames(d)
+d.rel <- melt(d.rel)
+
+pcoa.shape <- d.rel$group
+pcoa.shape <- ordered(pcoa.shape,levels=c("bulkM","bulkMF", "avM","avMF","ecM","ecMF"))
+
+p1 <- ggplot(d.rel, aes(x=variable, y=pcoa.shape, fill=pcoa.shape)) #, fill=value)) 
+p1+geom_point(aes(size=value), shape=21)+
+ scale_fill_manual(values=c("#EB8F43", "#9BBB59","#EB8F43", "#9BBB59","#EB8F43", "#9BBB59","#EB8F43", "#9BBB59"))+ guides(fill=F)+
+  scale_y_discrete(labels=c("Bulk","Bulk","Grass","Grass","Forb","Forb"))+
+ #scale_fill_gradientn(colors=rainbow(5),limits=c(0,.5), guide_legend("Relative Abundance"))+
+  scale_x_discrete(labels=c("35","49","122","89","92","129","39","63","64","104","16","57","94","4","24", "34","76","8","21","27","71")) +
+theme(panel.background=element_blank(), panel.border = element_rect(colour = "black", fill=NA, size=1)) + scale_size_area(max_size=15, limits=c(0,0.5)) + theme(axis.text.x=element_text(size=12, angle=90),
+          axis.text.y=element_text(size=14, angle=0), legend.text=element_text(size=14), axis.title = (element_text(size=18)), axis.ticks.length=unit(.25, "cm")) +
+labs(x="OTU", y="Soil Source") + labs(size=expression("Relative Abundance"))
+
+
+```
+
+```{r indicator species analysis using multipatt}
+#Value (IndVal) index to measure the association between a species and a
+#site group. The method of Dufr^ene and Legendre [1997] calculates the In-
+#dVal index between the species and each site group and then looks for the
+#group corresponding to the highest association value.
+require("indicspecies")
+
+groups= metaotu$pxt
+groups
+#block = metaotu$Block
+#block
+m <- as.data.frame(otu.2.rel[, colSums(otu.2.rel) > 0.05], na.rm=T)
+#m <- m[,1:1000]
+set.seed(42)
+#is <- multipatt(m, groups, restcomb=c(1,2,3,4,5,6,27,36), control=how(nperm=1000), 
+#is <- multipatt(m, groups, restcomb=c(27,36), control=how(nperm=999), set.seed(42))
+is <- multipatt(m, groups, restcomb=c(1,2,3,4,5,6), control=how(nperm=1000), func="IndVal.g",duleg=T, set.seed(42))
+
+#is_block <-multipatt(otu.2.rel, block, control=how(nperm=1000))
+
+#c<-coverage(m, is)
+
+summary(is)
+#summary(is_block)
+
+is$sign
+```
+
+```{r core microbiome - OTUs lists}
+#For each treatment (plant*source) I need to first subset
+#Then remove extraneous fields from meta file - leave only OTUs
+ecm.otu <- metaotu %>%
+  filter(plant=="ec" & Treatment=="M") %>%
+  dplyr::select(-1:-19)
+#Select columns that are equal to zero.
+#Convert to a column with gather (maybe a better way?) then make a distinct list
+#This list are the Otu that had a 0 in one of the columns - I only want to include #Otu that appear in each field replicate for a treatment 
+ecm.remove <- ecm.otu %>%
+  dplyr::select_if(function(x) any(x<=0))%>%
+  gather(otu, otu.cnt)%>%
+  distinct(otu)
+#Great I have a list of OTU I don't want...
+#Now let's get the OTU I do want
+ecm.otu <- ecm.otu %>%
+  dplyr::select(-one_of(as_vector(ecm.remove))) %>%
+  gather(otu, otu.cnt) %>%
+  group_by(otu) %>%
+  dplyr::summarise(otu.mean=mean(otu.cnt)) %>%
+  mutate(treatment="ecm")
+
+#Yep gotta do this for each plant*treatment (6)
+ecmf.otu <- metaotu %>%
+  filter(plant=="ec" & Treatment=="MF") %>%
+  dplyr::select(-1:-19)
+ecmf.remove <- ecmf.otu %>%
+  dplyr::select_if(function(x) any(x<=0))%>%
+  gather(otu, otu.cnt)%>%
+  distinct(otu)
+ecmf.otu <- ecmf.otu %>%
+  dplyr::select(-one_of(as_vector(ecmf.remove))) %>%
+  gather(otu, otu.cnt)%>%
+  group_by(otu) %>%
+  dplyr::summarise(otu.mean=mean(otu.cnt)) %>%
+  mutate(treatment="ecmf")
+
+#Yep gotta do this for each plant*treatment (6)
+avm.otu <- metaotu %>%
+  filter(plant=="av" & Treatment=="M") %>%
+  dplyr::select(-1:-19)
+avm.remove <- avm.otu %>%
+  dplyr::select_if(function(x) any(x<=0))%>%
+  gather(otu, otu.cnt)%>%
+  distinct(otu)
+avm.otu <- avm.otu %>%
+  dplyr::select(-one_of(as_vector(avm.remove))) %>%
+  gather(otu, otu.cnt)%>%
+  group_by(otu) %>%
+  dplyr::summarise(otu.mean=mean(otu.cnt)) %>%
+  mutate(treatment="avm")
+
+#Yep gotta do this for each plant*treatment (6)
+avmf.otu <- metaotu %>%
+  filter(plant=="av" & Treatment=="MF") %>%
+  dplyr::select(-1:-19)
+avmf.remove <- avmf.otu %>%
+  dplyr::select_if(function(x) any(x<=0))%>%
+  gather(otu, otu.cnt)%>%
+  distinct(otu)
+avmf.otu <- avmf.otu %>%
+  dplyr::select(-one_of(as_vector(avmf.remove))) %>%
+  gather(otu, otu.cnt)%>%
+  group_by(otu) %>%
+  dplyr::summarise(otu.mean=mean(otu.cnt)) %>%
+  mutate(treatment="avmf")
+
+#Yep gotta do this for each plant*treatment (6)
+bm.otu <- metaotu %>%
+  filter(plant=="bulk" & Treatment=="M") %>%
+  dplyr::select(-1:-19)
+bm.remove <- bm.otu %>%
+  dplyr::select_if(function(x) any(x<=0))%>%
+  gather(otu, otu.cnt)%>%
+  distinct(otu)
+bm.otu <- bm.otu %>%
+  dplyr::select(-one_of(as_vector(bm.remove))) %>%
+  gather(otu, otu.cnt)%>%
+  group_by(otu) %>%
+  dplyr::summarise(otu.mean=mean(otu.cnt)) %>%
+  mutate(treatment="bm")
+
+#Yep gotta do this for each plant*treatment (6)
+bmf.otu <- metaotu %>%
+  filter(plant=="bulk" & Treatment=="MF") %>%
+  dplyr::select(-1:-19)
+bmf.remove <- bmf.otu %>%
+  dplyr::select_if(function(x) any(x<=0))%>%
+  gather(otu, otu.cnt)%>%
+  distinct(otu)
+bmf.otu <- bmf.otu %>%
+  dplyr::select(-one_of(as_vector(bmf.remove))) %>%
+  gather(otu, otu.cnt)%>%
+  group_by(otu) %>%
+  dplyr::summarise(otu.mean=mean(otu.cnt)) %>%
+  mutate(treatment="bmf")
+
+bulk.list <- ""
+bulk.list <- bind_rows(bm.otu, bmf.otu)
+bulk.list <- bulk.list %>% distinct(otu) 
+bulk.list <- bulk.list$otu
+
+#These are all the otus found in bulk soil samples.   
+
+#Add taxa
+tax.df <- tax.df[,-c(1)]
+tax.df <- tax.df %>% 
+  rownames_to_column() %>%
+  dplyr::rename(otu=rowname)
+
+head(tax.df)
+```
+
+```{r Core microbiome comparisions}
+#Comparisons
+
+###Is there a way to compare these? 
+###Each treatment would have its own otu matrix... Can I average rel abundances? Do a pcoa and permanova or could I do a mantel analysis?? #core.ecm.dist <- vegdist(core.ecm, "bray")
+#core.ecmf.dist <- vegdist(core.ecmf, "bray")
+#mantel(core.ecm.dist, core.ecmf.dist)
+
+#Is there a core microbiome of grasses and forbs - across treatments? different?
+#Yes there is a total of 2735 OTUs found in both unfertilized and fertilized forb rhizospheres, of those OTUs, 46% are found in both treatments.  Similarly grasses had a total of  2240 OTUs found in both fertilization treatments sharing 45% of the same OTUs. However, 55% of fertilized and 70% of unfertilized shared OTUs are found in all treatments. That means at least half of the OTUs shared within a fertilization treatment are shared among all treatments.
+
+#If half of the shared otus are cosmopolitan but half are not then increase in diversity more in rare species?
+
+core.ec <- ecm.otu %>%
+  semi_join(ecmf.otu, by="otu") %>%
+  left_join(tax.df, by="otu")
+#1249
+
+core.ecm <- ecm.otu %>%
+  anti_join(ecmf.otu, by="otu")
+#542
+
+core.ecmf <- ecmf.otu %>%
+  anti_join(ecm.otu, by="otu")
+#944
+
+#Total EC = 2735..
+require("VennDiagram")
+
+grid.newpage()
+forb <- draw.pairwise.venn(1791, 2193, 1249, category = c("Unfertilized", "Fertilized"), lty = rep("blank", 2), fill = c("light blue", "pink"), alpha = rep(0.5, 2), cat.pos = c(0,0), cat.dist = rep(0.025, 2), scaled = FALSE)
+
+ggsave("../figures/venn_forb.png", plot=forb, device=NULL, path=NULL, scale=1, width=6.3, height=4.4, dpi=900, limitsize=TRUE)
+
+core.av <- avm.otu %>%
+  inner_join(avmf.otu, by="otu")%>%
+  left_join(tax.df, by="otu")
+#1019
+
+core.avm <- avm.otu %>%
+  anti_join(avmf.otu, by="otu")
+#507
+
+core.avmf <- avmf.otu %>%
+  anti_join(avm.otu, by="otu")
+#714
+
+#Total AV = 2240
+
+grid.newpage()
+grass <- draw.pairwise.venn(1526, 1773, 1019, category = c("Unfertilized", "Fertilized"), lty = rep("blank", 2), fill = c("light blue", "pink"), alpha = rep(0.5, 2), cat.pos = c(0,0), cat.dist = rep(0.025, 2), scaled = FALSE)
+
+ggsave("../figures/venn_grass.png", plot=grass, device=NULL, path=NULL, scale=1, width=6.3, height=4.4, dpi=900, limitsize=TRUE)
+
+core.plant <- core.av %>%
+  inner_join(core.ec, by="otu")
+
+###What if I remove the OTUs that are found in all samples including bulk?
+#per plant and overall?
+#av.no_cosmo <- core.av %>% 
+  #anti_join(cosmo)
+
+
+#How many OTU are similar in bulk and rhizospheres within a treatment? 
+###Unfertilzied
+n1.bm.avm.anti <- bm.otu %>%
+  anti_join(avm.otu, by="otu") 
+n1.bm.ecm.anti <- bm.otu %>%
+  anti_join(ecm.otu, by="otu")
+#n1.bm=552+466=1019
+
+n2.ecm.bm.anti <- ecm.otu %>%
+  anti_join(bm.otu, by="otu") 
+n2.ecm.avm.anti <- ecm.otu %>%
+  anti_join(avm.otu, by="otu")
+#n2.ecm=696+542=1238
+
+n3.avm.bm.anti <- avm.otu %>%
+  anti_join(bm.otu, by="otu") 
+n3.avm.ecm.anti <- avm.otu %>%
+  anti_join(ecm.otu, by="otu")
+#n3.avm=517+277=794
+
+n12.bm.ecm.shared <- bm.otu %>%
+  semi_join(ecm.otu, by="otu") 
+#n12.bm.fm=1095
+
+n13.bm.avm.shared <- bm.otu %>%
+  semi_join(avm.otu, by="otu") 
+#n13.bm.fm=1009
+
+n23.ecm.avm.shared <- ecm.otu %>%
+  semi_join(avm.otu, by="otu")
+#n23.ecm.avm=1249
+
+n123.bm.ecm.avm.shared <- bm.otu %>%
+  semi_join(n23.ecm.avm.shared, by="otu")
+#n123.bm.ec.avm = 921
+
+grid.newpage()
+v <- draw.triple.venn(area1 = 4044, area2 = 4503, area3 = 3973, n12 = 2016, n23 = 2170, n13 = 1930, n123 = 921, category = c("Bulk", "Forb", "Grass"), lty = "blank", fill = c("skyblue", "pink1", "mediumorchid")) 
+require(gridExtra)
+grid.arrange(gTree(children=v), top="Unfertilized Soils", bottom="")
+ggsave("../figures/venn_unfertilized.png", plot=v, device=NULL, path=NULL, scale=1, width=6.3, height=4.4, dpi=900, limitsize=TRUE)
+
+###Fertilzied
+n1.bmf.avmf.anti <- bmf.otu %>%
+  anti_join(avmf.otu, by="otu") 
+n1.bmf.ecmf.anti <- bmf.otu %>%
+  anti_join(ecmf.otu, by="otu")
+#n1.bm=1277+1039=2316
+
+n2.ecmf.bmf.anti <- ecmf.otu %>%
+  anti_join(bmf.otu, by="otu") 
+n2.ecmf.avmf.anti <- ecmf.otu %>%
+  anti_join(avmf.otu, by="otu")
+#n2.ecm=577+845=1422
+
+n3.avmf.bmf.anti <- avmf.otu %>%
+  anti_join(bmf.otu, by="otu") 
+n3.avmf.ecmf.anti <- avmf.otu %>%
+  anti_join(ecmf.otu, by="otu")
+#n3.avm=355+385=740
+
+n12.bmf.ecmf.shared <- bmf.otu %>%
+  semi_join(ecmf.otu, by="otu") 
+#n12.bm.fm=1616
+
+n13.bmf.avmf.shared <- bmf.otu %>%
+  semi_join(avmf.otu, by="otu") 
+#n13.bm.fm=1277
+
+n23.ecmf.avmf.shared <- ecmf.otu %>%
+  semi_join(avmf.otu, by="otu")
+#n23.ecm.avm=1348
+
+n123.bmf.ecmf.avmf.shared <- bmf.otu %>%
+  semi_join(n23.ecmf.avmf.shared, by="otu")
+#n123.bm.ec.avm = 1182
+
+###who is everywhere?
+core.all <- n123.bm.ecm.avm.shared %>%
+  inner_join (n123.bmf.ecmf.avmf.shared, by="otu")
+###647 Otus are shared between all plots!
+
+###Otus found in every sample are removed then 205 are unique to plants regardless of plant or treatment
+###Otus found in every sample are removed then 602 out 1249 are uniques to EC
+#52% of EC core is cosmopolitian while 48% specific only to EC
+###Otus found in every sample are removed then 372 out of 1019 are unique to AV
+#63% of AV core is cosmopolitan while 37% specific only to AV
+###Grasses associate more with cosmopolitan species... 
+
+true.plant.all <- core.plant %>%
+  anti_join(core.all, by="otu")
+#205
+
+true.plant.ec <- core.ec %>%
+  anti_join(core.all, by="otu")
+#602
+
+true.plant.av <- core.av %>%
+  anti_join(core.all, by="otu")
+#304
+
+#true.plant.ec.g <- true.plant.ec %>%
+#  anti_join(true.plant.av,by="otu")
+```
+
+```{r make venns}
+grid.newpage()
+all <- draw.pairwise.venn(1568, 1829, 647, category = c("Unfertilized", "Fertilized"), lty = rep("blank", 2), fill = c("light blue", "pink"), alpha = rep(0.5, 2), cat.pos = c(0,0), cat.dist = rep(0.025, 2), scaled = FALSE)
+ggsave("../figures/venn_all.png", plot=all, device=NULL, path=NULL, scale=1, width=6.3, height=4.4, dpi=900, limitsize=TRUE)
+
+grid.newpage()
+m <- draw.triple.venn(area1 = 4044, area2 = 4503, area3 = 3973, n12 = 2016, n23 = 2170, n13 = 1930, n123 = 921, category = c("Bulk", "Forb", "Grass"), lty = "blank", fill = c("skyblue", "pink1", "mediumorchid")) 
+require(gridExtra)
+grid.arrange(gTree(children=m), top="Unfertilized Soils", bottom="")
+ggsave("../figures/venn_unfertilized.png", plot=m, device=NULL, path=NULL, scale=1, width=6.3, height=4.4, dpi=900, limitsize=TRUE)
+
+grid.newpage()
+mf <- draw.triple.venn(area1 = 6391, area2 = 5568, area3 = 4547, n12 = 2798, n23 = 2530, n13 = 2459, n123 = 1182, category = c("Bulk", "Forb", "Grass"), lty = "blank", fill = c("skyblue", "pink1", "mediumorchid")) 
+require(gridExtra)
+grid.arrange(gTree(children=mf), top="Fertilized Soils", bottom="")
+ggsave("../figures/venn_fertilized.png", plot=mf, device=NULL, path=NULL, scale=1, width=6.3, height=4.4, dpi=900, limitsize=TRUE)
+
+
+```
+
+```{r compare shared otus}
+###Are plant associated communities correlated?
+###Can I use these ds to mantel --- ecm and ecmf --- avm and avmf
+otu.list<-core.all$otu #in every sample
+plant.all.list<-true.plant.all$otu
+forb.list <-true.plant.ec$otu
+grass.list <- true.plant.av$otu
+
+#are ecm and ecmf diff? avm and avmf diff?
+ecm.list <- ecm.otu$otu
+ecmf.list <-ecmf.otu$otu
+avm.list <- avm.otu$otu
+avmf.list <-avmf.otu$otu
+
+
+metaotu.s <- metaotu
+
+rownames(metaotu.s)=metaotu.s$group
+
+###Grass and forb comparisons should be jsut on samples from grass or forb
+###Cosmo samples can include all
+###filter then select just otu
+
+##Otus that are everywhere
+core.all.df <- metaotu.s %>%
+  dplyr::select(otu.list)
+
+##forb core 
+forb.df <- metaotu.s %>%
+  dplyr::select(forb.list)
+
+forbm.df <- metaotu.s %>%
+  dplyr::select(ecm.list)
+
+forbmf.df <- metaotu.s %>%
+  dplyr::select(ecmf.list)
+
+##grass core
+grass.df <- metaotu.s %>%
+  dplyr::select(grass.list)
+
+grassm.df <- metaotu.s %>%
+  dplyr::select(avm.list)
+
+grassmf.df <- metaotu.s %>%
+  dplyr::select(avmf.list)
+  
+core.all.dist <- vegdist(core.all.df, method="bray")
+forb.dist <- vegdist(forb.df, method="bray")
+forbm.dist <- vegdist(forbm.df, method="bray")
+forbmf.dist <- vegdist(forbmf.df, method="bray")
+grass.dist <- vegdist(grass.df, method="bray")
+grassm.dist <- vegdist(grassm.df, method="bray")
+grassmf.dist <- vegdist(grassmf.df, method="bray")
+
+forb.m <- mantel.rtest(forbm.dist, forbmf.dist, nrepet = 999)
+forb.m
+
+grass.m <- mantel.rtest(grassm.dist, grassmf.dist, nrepet = 999)
+grass.m
+
+g <- mantel.rtest(forb.dist, core.all.dist, nrepet = 999)
+g
+
+fg <- mantel.rtest(grass.dist, forb.dist, nrepet = 999)
+fg
+
+```
+
+```{r phyloseq Phylum stacked graphs of taxa composition}
+
+# melt to long format (for ggploting) 
+# prune out phyla below 2% in each sample
+wrc_phylum <- treat_merge %>%
+  tax_glom(taxrank = "Phylum") %>%                     # agglomerate at phylum level
+  transform_sample_counts(function(x) {x/sum(x)} ) %>% # Transform to rel. abundance
+  psmelt() %>%                                         # Melt to long format
+  filter(Abundance > 0.01) %>%                        # Filter out low abundance taxa
+  arrange(Phylum)                                      # Sort data frame alphabetically by phylum
+
+# Set colors for plotting
+phylum_colors <- c("brown","orange", "blue", "red","yellow","purple")
+  
+  #c("#CBD588", "#5F7FC7","#DA5724", "#508578", "#CD9BCD",
+  # "#AD6F3B", "#673770","#D14285", "#652926", "#C84248", 
+  #"#8569D5", "#5E738F","#D1A33D", "#8A7C64", "#599861", "#000000", "#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7")
+
+# Plot 
+s <- as.factor(wrc_phylum$Sample)
+wrc_phylum$Sample <- ordered(s,levels=c("bulkM","avM", "ecM","bulkMF","avMF", "ecMF"))
+s <- revalue(s, c("bulkM"="bulk unfertilized", "avM"="grass unfertilized", "ecM"="forb unfertilized","bulkMF"="bulk fertilized", "avMF"="grass fertilized", "ecMF"="forb fertilized"))
+s <- mapvalues(s, from = c("bulkM","avM", "ecM","bulkMF","avMF", "ecMF"), to = c("bulk unfertilized","grass unfertilized", "forb unfertilized","bulk fertilized", "grass fertilized", "forb fertilized"))
+
+wrc_plot<- ggplot(wrc_phylum, aes(x = Phylum, y = Abundance, fill = s)) + 
+  #facet_grid(Type ~ .) +
+  #####UPDATE THIS ON EACH GRAPH ######
+  geom_bar(stat = "summary", fun.y = "mean") +
+  scale_fill_manual(values = phylum_colors) +
+  # Remove x axis title
+  theme(axis.title.x = element_blank()) + 
+  guides(fill = guide_legend(reverse = TRUE, keywidth = 1, keyheight = 1)) +
+  ylab("Relative Abundance (Phyla > 1.0%) \n") +
+  ggtitle("Phylum Composition of Bacterial Communities By Site") 
+
+wrc_plot + coord_flip()
+
+ggsave(file="../figures/phylum_stack.pdf", width=9, height=9, dpi=300)
+
+```
+
+```{r phyloseq Class stacked graphs of taxa composition}
+# melt to long format (for ggploting) 
+# prune out phyla below 2% in each sample
+wrc_class <- treat_merge %>%
+  tax_glom(taxrank = "Class") %>%                     # agglomerate at phylum level
+  transform_sample_counts(function(x) {x/sum(x)} ) %>% # Transform to rel. abundance
+  psmelt() %>%                                         # Melt to long format
+  filter(Abundance > 0.01) %>%                        # Filter out low abundance taxa
+  arrange(Class)                                     # Sort data frame alphabetically by phylum
+
+wrc_class
+# Set colors for plotting
+class_colors <- c("brown","orange", "blue", "red","yellow","purple")
+  #c(
+  #"#CBD588", "#5F7FC7","#DA5724", "#508578", "#CD9BCD",
+  # "#AD6F3B", "#673770","#D14285", "#652926", "#C84248", 
+  #"#8569D5", "#5E738F","#D1A33D", "#8A7C64", "#599861", "#000000", "#E69F00", "#56B4E9", #"#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7", "green", "red", "yellow","tan", #"pink", "purple", "gray", "white", "339900","666699","996699","009966")
+
+# Plot 
+
+s <- as.factor(wrc_class$Sample)
+#wrc_class$Sample <- ordered(s,levels=c("bulkM","avM", "ecM","bulkMF","avMF", "ecMF"))
+#t <- as.factor(wrc_class$plant)
+#wrc_class$plant <- ordered(t, levels=c("1","2","3"))
+#u <- as.factor(wrc_class$Treatment)
+#wrc_class$Treatment <- ordered(u, levels=c("1","2"))
+
+t <- revalue(s, c("bulkM"="bulk unfertilized", "avM"="grass unfertilized", "ecM"="forb unfertilized","bulkMF"="bulk fertilized", "avMF"="grass fertilized", "ecMF"="forb fertilized"))
+t <- mapvalues(s, from = c("bulkM","avM", "ecM","bulkMF","avMF", "ecMF"), to = c("bulk unfertilized","grass unfertilized", "forb unfertilized","bulk fertilized", "grass fertilized", "forb fertilized"))
+t<-ordered(t,levels=c("bulk unfertilized","grass unfertilized", "forb unfertilized","bulk fertilized", "grass fertilized", "forb fertilized"))
+
+
+wrc_plot<- ggplot(wrc_class, aes(x = Class, y = Abundance, fill = t)) + 
+  #facet_grid(plant ~ .) + 
+  geom_bar(stat = "identity", width=0.5) + #scale_fill_manual(values=c("#111111","#777777"))+
+  scale_fill_manual(values = class_colors) +
+  # Remove x axis title
+ theme_bw()  +
+    theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), 
+          axis.title.y=element_text(margin=margin(r=10)), 
+          axis.title.x=element_text(margin=margin(t=10)), panel.border =
+          element_rect(colour = "black",size=1)) + 
+    theme(axis.ticks.length=unit(0.3,"cm")) + 
+  #theme(axis.title=element_text(vjust=1,size=14,face="bold"),
+  #        axis.text=element_text(size=14), axis.text.x = element_text(size=14))+
+  ylab("Class Relative Abundance > 1.0%") +
+  xlab("Treatment") +
+  labs(fill="Treatment") +
+  ggtitle("Class Composition of Bacterial Communities") 
+
+wrc_plot + coord_flip() 
+
+ggsave(file="../figures/class_stack.pdf", width=9, height=9, dpi=300)
+
+wrc_class_o<-wrc_class[,c(2:3,23:25)]
+
+write.csv(wrc_class_o, file="class_composition.csv", row.names=TRUE)
+```
+
+```{r phyloseq Family - Actinobacteria  stacked graphs of taxa composition}
+# melt to long format (for ggploting) 
+# prune out phyla below 1% in each sample
+wrc_family <- treat_merge %>%
+  tax_glom(taxrank = "Family") %>%                     # agglomerate at phylum level
+  transform_sample_counts(function(x) {x/sum(x)} ) %>% # Transform to rel. abundance
+  psmelt() %>%                                         # Melt to long format
+  filter(Abundance > 0.01, Class == "Actinobacteria") %>%                        # Filter out low abundance taxa
+  arrange(Family)                                     # Sort data frame alphabetically by phylum
+
+# wrc_family
+# Set colors for plotting
+family_colors <- c("brown","orange", "blue", "red","yellow","purple")
+  #"#CBD588", "#5F7FC7","#DA5724", "#508578", "#CD9BCD",
+  # "#AD6F3B", "#673770","#D14285", "#652926", "#C84248", 
+ #"#8569D5", "#5E738F","#D1A33D", "#8A7C64", "#599861", "#000000", "#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7", "green", "red", "yellow","tan", "pink", "purple", "gray", "white", "339900","666699","996699","black"
+#)
+
+# Plot 
+
+s <- as.factor(wrc_family$Sample)
+t <- revalue(s, c("bulkM"="bulk unfertilized", "avM"="grass unfertilized", "ecM"="forb unfertilized","bulkMF"="bulk fertilized", "avMF"="grass fertilized", "ecMF"="forb fertilized"))
+t <- mapvalues(s, from = c("bulkM","avM", "ecM","bulkMF","avMF", "ecMF"), to = c("bulk unfertilized","grass unfertilized", "forb unfertilized","bulk fertilized", "grass fertilized", "forb fertilized"))
+t<-ordered(t,levels=c("bulk unfertilized","grass unfertilized", "forb unfertilized","bulk fertilized", "grass fertilized", "forb fertilized"))
+
+wrc_plot<- ggplot(wrc_family, aes(x = Family, y = Abundance, fill = t)) + 
+  #facet_grid(Type ~ .) +
+  geom_bar(stat = "identity", width=0.5) +
+  scale_fill_manual(values = family_colors) +
+  # Remove x axis title
+  theme_bw()  +
+    theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), 
+          axis.title.y=element_text(margin=margin(r=10)), 
+          axis.title.x=element_text(margin=margin(t=10)), panel.border =
+          element_rect(colour = "black",size=1), legend.position = "none") + 
+    theme(axis.ticks.length=unit(0.3,"cm")) + 
+  theme(axis.title=element_text(vjust=1,size=14,face="bold"),
+          axis.text=element_text(size=14), axis.text.x = element_text(size=14))+
+  ylab("Relative Abundance > 1%") +
+  xlab("Family Name")+
+  #labs(fill="Treatment")+
+  ggtitle("Actinobacteria Composition of \n Bacterial Communities") 
+
+wrc_plot + coord_flip() 
+
+wrc_family_actino<-wrc_family[,c(2:3,23:27)]
+
+write.csv(wrc_family_actino, file="actino_family_composition.csv", row.names=TRUE)
+
+ggsave(file="../figures/actino_family_stack.pdf", width=15, height=9, dpi=300)
+
+```
+
+```{r phyloseq Family - Alphaproteobacteria  stacked graphs of taxa composition}
+# melt to long format (for ggploting) 
+# prune out phyla below 1% in each sample
+wrc_family <- treat_merge %>%
+  tax_glom(taxrank = "Family") %>%                     # agglomerate at phylum level
+  transform_sample_counts(function(x) {x/sum(x)} ) %>% # Transform to rel. abundance
+  psmelt() %>%                                         # Melt to long format
+  filter(Abundance > 0.005, Class == "Alphaproteobacteria") %>%                        # Filter out low abundance taxa
+  arrange(Family)                                     # Sort data frame alphabetically by phylum
+
+# wrc_family
+# Set colors for plotting
+family_colors <- c("brown","orange", "blue", "red","yellow","purple")
+  #"#CBD588", "#5F7FC7","#DA5724", "#508578", "#CD9BCD",
+  # "#AD6F3B", "#673770","#D14285", "#652926", "#C84248", 
+ #"#8569D5", "#5E738F","#D1A33D", "#8A7C64", "#599861", "#000000", "#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7", "green", "red", "yellow","tan", "pink", "purple", "gray", "white", "339900","666699","996699","black"
+#)
+
+# Plot 
+
+s <- as.factor(wrc_family$Sample)
+t <- revalue(s, c("bulkM"="bulk unfertilized", "avM"="grass unfertilized", "ecM"="forb unfertilized","bulkMF"="bulk fertilized", "avMF"="grass fertilized", "ecMF"="forb fertilized"))
+t <- mapvalues(s, from = c("bulkM","avM", "ecM","bulkMF","avMF", "ecMF"), to = c("bulk unfertilized","grass unfertilized", "forb unfertilized","bulk fertilized", "grass fertilized", "forb fertilized"))
+t<-ordered(t,levels=c("bulk unfertilized","grass unfertilized", "forb unfertilized","bulk fertilized", "grass fertilized", "forb fertilized"))
+
+wrc_plot<- ggplot(wrc_family, aes(x = Family, y = Abundance, fill = t)) + 
+  #facet_grid(Type ~ .) +
+  geom_bar(stat = "identity", width=0.5) +
+  scale_fill_manual(values = family_colors) +
+  # Remove x axis title
+  theme_bw()  +
+    theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), 
+          axis.title.y=element_text(margin=margin(r=10)), 
+          axis.title.x=element_text(margin=margin(t=10)), panel.border =
+          element_rect(colour = "black",size=1), legend.position = "none") + 
+    theme(axis.ticks.length=unit(0.3,"cm")) + 
+  theme(axis.title=element_text(vjust=1,size=14,face="bold"),
+          axis.text=element_text(size=14), axis.text.x = element_text(size=14))+
+  ylab("Relative Abundance > 1%") +
+  xlab("Family Name")+
+  #labs(fill="Treatment")+
+  ggtitle("Alphaproteobacteria Composition of \n Bacterial Communities") 
+
+wrc_plot + coord_flip() 
+
+wrc_family_alpha<-wrc_family[,c(2:3,40:45)]
+
+write.csv(wrc_family_alpha, file="alpha_family_composition.csv", row.names=TRUE)
+
+ggsave(file="../figures/alpha_family_stack.pdf", width=15, height=9, dpi=300)
+
+```
+
+```{r phyloseq order stacked graphs of taxa composition}
+# melt to long format (for ggploting) 
+# prune out phyla below 2% in each sample
+wrc_order <- treat_merge %>%
+  tax_glom(taxrank = "Order") %>%                     # agglomerate at phylum level
+  transform_sample_counts(function(x) {x/sum(x)} ) %>% # Transform to rel. abundance
+  psmelt() %>%                                         # Melt to long format
+  filter(Abundance > 0.01) %>%                        # Filter out low abundance taxa
+  arrange(Order)                                   # Sort data frame alphabetically by phylum
+
+# wrc_family
+# Set colors for plotting
+family_colors <- c("brown","orange", "blue", "red","yellow","purple")
+  #"#CBD588", "#5F7FC7","#DA5724", "#508578", "#CD9BCD",
+  # "#AD6F3B", "#673770","#D14285", "#652926", "#C84248", 
+ #"#8569D5", "#5E738F","#D1A33D", "#8A7C64", "#599861", "#000000", "#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7", "green", "red", "yellow","tan", "pink", "purple", "gray", "white", "339900","666699","996699","black"
+#)
+
+# Plot 
+
+s <- as.factor(wrc_family$Sample)
+wrc_family$Sample <- ordered(s,levels=c("bulkM","avM", "ecM","bulkMF","avMF", "ecMF"))
+
+wrc_plot<- ggplot(wrc_order, aes(x = Order, y = Abundance, fill =Sample)) + 
+  #facet_grid(Type ~ .) +
+  geom_bar(stat = "identity", width=0.5) +
+  scale_fill_manual(values = family_colors) +
+  # Remove x axis title
+  theme(axis.title.x = element_blank()) + 
+  guides(fill = guide_legend(keywidth = 1, keyheight = 1)) +
+  ylab("Relative Abundance (Family > 1%) \n") +
+  ggtitle("Order Composition of Bacterial Communities By Site") 
+
+wrc_plot + coord_flip() 
+
+ggsave(file="../figures/order_stack.pdf", width=15, height=9, dpi=300)
+
+```
+
+```{r phyloseq Family stacked graphs of taxa composition}
+# melt to long format (for ggploting) 
+# prune out phyla below 1% in each sample
+wrc_family <- treat_merge %>%
+  tax_glom(taxrank = "Family") %>%                     # agglomerate at phylum level
+  transform_sample_counts(function(x) {x/sum(x)} ) %>% # Transform to rel. abundance
+  psmelt() %>%                                         # Melt to long format
+  filter(Abundance > 0.01, Class == "Actinobacteria") %>%                        # Filter out low abundance taxa
+  arrange(Family)                                     # Sort data frame alphabetically by phylum
+
+# wrc_family
+# Set colors for plotting
+family_colors <- c("brown","orange", "blue", "red","yellow","purple")
+  #"#CBD588", "#5F7FC7","#DA5724", "#508578", "#CD9BCD",
+  # "#AD6F3B", "#673770","#D14285", "#652926", "#C84248", 
+ #"#8569D5", "#5E738F","#D1A33D", "#8A7C64", "#599861", "#000000", "#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7", "green", "red", "yellow","tan", "pink", "purple", "gray", "white", "339900","666699","996699","black"
+#)
+
+# Plot 
+
+s <- as.factor(wrc_family$Sample)
+t <- revalue(s, c("bulkM"="bulk unfertilized", "avM"="grass unfertilized", "ecM"="forb unfertilized","bulkMF"="bulk fertilized", "avMF"="grass fertilized", "ecMF"="forb fertilized"))
+t <- mapvalues(s, from = c("bulkM","avM", "ecM","bulkMF","avMF", "ecMF"), to = c("bulk unfertilized","grass unfertilized", "forb unfertilized","bulk fertilized", "grass fertilized", "forb fertilized"))
+t<-ordered(t,levels=c("bulk unfertilized","grass unfertilized", "forb unfertilized","bulk fertilized", "grass fertilized", "forb fertilized"))
+
+wrc_plot<- ggplot(wrc_family, aes(x = Family, y = Abundance, fill = t)) + 
+  #facet_grid(Type ~ .) +
+  geom_bar(stat = "identity", width=0.5) +
+  scale_fill_manual(values = family_colors) +
+  # Remove x axis title
+  theme_bw()  +
+    theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), 
+          axis.title.y=element_text(margin=margin(r=10)), 
+          axis.title.x=element_text(margin=margin(t=10)), panel.border =
+          element_rect(colour = "black",size=1)) + 
+    theme(axis.ticks.length=unit(0.3,"cm")) + 
+  guides(fill = guide_legend(keywidth = 1, keyheight = 1)) +
+  ylab("Relative Abundance > 1%") +
+  xlab("Family Name")+
+  labs(fill="Treatment")+
+  ggtitle("Family Composition of Bacterial Communities") 
+
+wrc_plot + coord_flip() 
+
+wrc_family_o<-wrc_family[,c(2:3,40:45)]
+
+write.csv(wrc_family_o, file="family_composition.csv", row.names=TRUE)
+
+ggsave(file="../figures/family_stack.pdf", width=15, height=9, dpi=300)
+
+```
+
+```{r phyloseq Genus stacked graphs of taxa composition}
+# melt to long format (for ggploting) 
+# prune out phyla below 2% in each sample
+wrc_family <- treat_merge %>%
+  tax_glom(taxrank = "Genus") %>%                     # agglomerate at phylum level
+  transform_sample_counts(function(x) {x/sum(x)} ) %>% # Transform to rel. abundance
+  psmelt() %>%                                         # Melt to long format
+  filter(Abundance > 0.01) %>%                        # Filter out low abundance taxa
+  arrange(Genus)                                     # Sort data frame alphabetically by phylum
+
+ wrc_family
+# Set colors for plotting
+family_colors <- c(
+  "#CBD588", "#5F7FC7","#DA5724", "#508578", "#CD9BCD",
+   "#AD6F3B", "#673770","#D14285", "#652926", "#C84248", 
+  "#8569D5", "#5E738F","#D1A33D", "#8A7C64", "#599861", "#000000", "#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7", "green", "red", "yellow","tan", "pink", "purple", "gray", "white", "339900","666699","black"
+)
+
+# Plot 
+
+s <- as.factor(wrc_family$Sample)
+wrc_family$Sample <- ordered(s,levels=c("bulkM","avM", "ecM","bulkMF","avMF", "ecMF"))
+
+wrc_plot<- ggplot(wrc_family, aes(x = Genus, y = Abundance, fill = Sample)) + 
+  #facet_grid(Type ~ .) +
+  geom_bar(stat = "identity", width=0.5) +
+  scale_fill_manual(values = family_colors) +
+  # Remove x axis title
+  theme(axis.title.x = element_blank()) + 
+  guides(fill = guide_legend(keywidth = 1, keyheight = 1)) +
+  ylab("Relative Abundance (Genus > 1%) \n") +
+  ggtitle("Genus Composition of Bacterial Communities By Site") 
+
+wrc_plot + coord_flip() 
+ggsave(file="../figures/genus_stack.1.pdf", width=15, height=9, dpi=300)
+```
+
+
+
+

@@ -128,9 +128,9 @@ text(1000,1000,"1:1",pos=2, col='red')
 ```{r Relative abundance and PERMANOVA }
 #transforms read counts to relative abundance
 #Using rarefied OTU dataset
-otu.2.rel <- otu.rare
-for(i in 1:dim(otu.rare)[1]){
-  otu.2.rel[i,] <- otu.rare[i,]/sum(otu.rare[i,])
+otu.2.rel <- otu.2
+for(i in 1:dim(otu.2)[1]){
+  otu.2.rel[i,] <- otu.2[i,]/sum(otu.2[i,])
 }
 
 #Combine experimental deisng meta data with OTU relative abundance data
@@ -296,7 +296,7 @@ plot1 + geom_point(aes(shape = pcoa.shape, colour = pcoa.col), size=7) +
   #Sets size of tick marks on axis
   theme(axis.ticks.length=unit(0.3,"cm")) + 
   #Sets labels for plot title, axis titles, and legend headings
-  xlab("PCoA 1 (30.5%)") + ylab("PCoA 2 (21.7%)") + 
+  xlab("PCoA 1 (31.6%)") + ylab("PCoA 2 (22.5%)") + 
   labs(shape = "Soil Source") +
   labs(colour="Treatment") +
   ggtitle("16S rRNA Microbial Community Analysis") 
@@ -894,7 +894,8 @@ s <- mapvalues(s, from = c("bulkM","avM", "ecM","bulkMF","avMF", "ecMF"), to = c
 
 wrc_plot<- ggplot(wrc_phylum, aes(x = Phylum, y = Abundance, fill = s)) + 
   #facet_grid(Type ~ .) +
-  geom_bar(stat = "identity") +
+  #####UPDATE THIS ON EACH GRAPH ######
+  geom_bar(stat = "summary", fun.y = "mean") +
   scale_fill_manual(values = phylum_colors) +
   # Remove x axis title
   theme(axis.title.x = element_blank()) + 
@@ -962,9 +963,9 @@ wrc_plot + coord_flip()
 
 ggsave(file="../figures/class_stack.pdf", width=9, height=9, dpi=300)
 
-wrc_class_o<-wrc_class[,c(2:3,40:43)]
+wrc_class_o<-wrc_class[,c(2:3,23:25)]
 
-write.csv(wrc_family_o, file="class_composition.csv", row.names=TRUE)
+write.csv(wrc_class_o, file="class_composition.csv", row.names=TRUE)
 ```
 ```{r phyloseq Family - Actinobacteria  stacked graphs of taxa composition}
 # melt to long format (for ggploting) 
@@ -1011,7 +1012,7 @@ wrc_plot<- ggplot(wrc_family, aes(x = Family, y = Abundance, fill = t)) +
 
 wrc_plot + coord_flip() 
 
-wrc_family_actino<-wrc_family[,c(2:3,40:45)]
+wrc_family_actino<-wrc_family[,c(2:3,23:27)]
 
 write.csv(wrc_family_actino, file="actino_family_composition.csv", row.names=TRUE)
 
@@ -1026,7 +1027,7 @@ wrc_family <- treat_merge %>%
   tax_glom(taxrank = "Family") %>%                     # agglomerate at phylum level
   transform_sample_counts(function(x) {x/sum(x)} ) %>% # Transform to rel. abundance
   psmelt() %>%                                         # Melt to long format
-  filter(Abundance > 0.01, Class == "Alphaproteobacteria") %>%                        # Filter out low abundance taxa
+  filter(Abundance > 0.005, Class == "Alphaproteobacteria") %>%                        # Filter out low abundance taxa
   arrange(Family)                                     # Sort data frame alphabetically by phylum
 
 # wrc_family
@@ -1315,8 +1316,6 @@ summary(is)
 
 is$sign
 ```
-
-
 
 ```{r species comparison}
 #Work in progress

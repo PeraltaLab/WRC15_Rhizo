@@ -1,0 +1,7 @@
+OTU	Cluster	IndVal	Prob	ta2	ta3	ta4	ta5	ta6	OTU
+Otu00001	1	0.648422232356228	0.022	Proteobacteria	Alphaproteobacteria	Rhizobiales	Rhizobiales_unclassified	Rhizobiales_unclassified	Otu00001
+Otu00004	1	0.720329104684055	0.036	Proteobacteria	Alphaproteobacteria	Rhizobiales	Rhizobiales_unclassified	Rhizobiales_unclassified	Otu00004
+Otu00034	1	0.77502473212498	0.034	Proteobacteria	Proteobacteria_unclassified	Proteobacteria_unclassified	Proteobacteria_unclassified	Proteobacteria_unclassified	Otu00034
+Otu00005	2	0.633930694120193	0.038	Actinobacteria	Actinobacteria	Solirubrobacterales	Solirubrobacterales_unclassified	Solirubrobacterales_unclassified	Otu00005
+Otu00023	2	0.93671341699007	0.034	Bacteria_unclassified	Bacteria_unclassified	Bacteria_unclassified	Bacteria_unclassified	Bacteria_unclassified	Otu00023
+Otu00025	2	0.729967374654674	0.03	Proteobacteria	Betaproteobacteria	Burkholderiales	Burkholderiaceae	Burkholderia	Otu00025
