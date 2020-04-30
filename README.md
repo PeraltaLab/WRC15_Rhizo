@@ -1,10 +1,9 @@
 # WRC15_Rhizo
 
-This repository contains open-source code, data, & text files for 
+This repository contains open-source code, data, & text files.
 
 For information regarding the project, please visit: 
-Bledsoe RB, Goodwillie C, and Peralta AL. 2020. Long-term nutrient enrichment of an oligotroph-dominated wetland increases bacterial 
-diversity in bulk soils and plant rhizospheres. BioRxiv: https://doi.org/10.1101/2020.01.08.899781 
+Bledsoe RB, Goodwillie C, and Peralta AL. 2020. Long-term nutrient enrichment of an oligotroph-dominated wetland increases bacterial diversity in bulk soils and plant rhizospheres. [biorxiv pre-print](https://doi.org/10.1101/2020.01.08.899781) 
 
 Raw sequence files can be found at NCBI SRA BioProject ID PRJNA599142.
 
@@ -17,7 +16,7 @@ Raw sequence files can be found at NCBI SRA BioProject ID PRJNA599142.
 * **analyses:** An R Markdown file that includes R script written by Regina Bledsoe, Ariane Peralta, and Mario Muscarella containing functions used in analysis of soil and microbial sequence data.
 
 * **bin:** 
-	* *MothurTools.R*: An R script written by Mario Muscarella (Indiana University, now at University of Illinois) containing functions used in the analysis of community sequence data.
+	* *MothurTools.R*: An R script written by Mario Muscarella containing functions used in the analysis of community sequence data.
 
 * **data:** Files associated with soil and microbial data sets. 
 
@@ -27,7 +26,7 @@ Raw sequence files can be found at NCBI SRA BioProject ID PRJNA599142.
 
 ## Contributors
 
-Dr. Regina Bledsoe: Principal Investigator, Student in the [Peralta Lab](http://www.peraltalab.com) at East Carolina University
+[Dr. Regina Bledsoe](https://ginabbledsoe.wixsite.com/microbes): Principal Investigator, PhD Student in the [Peralta Lab](http://www.peraltalab.com) at East Carolina University
 
 [Dr. Ariane Peralta](http://www.peraltalab.com): Co-Principal Investigator, Assistant Professor, Department of Biology, East Carolina University. 
 
