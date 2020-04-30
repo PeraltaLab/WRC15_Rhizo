@@ -32,4 +32,4 @@ Raw sequence files can be found at NCBI SRA BioProject ID PRJNA599142.
 
 [Dr. Carol Goodwillie](https://www.goodwillielab.com/): Co-Principal Investigator, Assistant Professor, Department of Biology, East Carolina University.
 
-[Dr. Mario Muscarella](http://mmuscarella.github.io/): Postdoc in the [O'Dwyer Lab](https://publish.illinois.edu/odwyerlab/) at the University of Illinois at Urbana-Champaign
+[Dr. Mario Muscarella](http://mmuscarella.github.io/): Postdoc at Université du Quebéc à Montréal, soon to be Assistant Professor, University of Alaska, Fairbanks
