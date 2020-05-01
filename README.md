@@ -5,7 +5,7 @@ This repository contains open-source code, data, & text files.
 For information regarding the project, please visit: 
 Bledsoe RB, Goodwillie C, and Peralta AL. 2020. Long-term nutrient enrichment of an oligotroph-dominated wetland increases bacterial diversity in bulk soils and plant rhizospheres. [biorxiv pre-print](https://doi.org/10.1101/2020.01.08.899781) 
 
-Raw sequence files can be found at NCBI SRA BioProject ID PRJNA599142.
+Raw sequence files can be found at NCBI SRA [BioProject ID PRJNA599142](https://www.ncbi.nlm.nih.gov/bioproject/?term=PRJNA599142).
 
 ## We address the following question
 
