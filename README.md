@@ -26,7 +26,7 @@ Raw sequence files can be found at NCBI SRA [BioProject ID PRJNA599142](https://
 
 ## Funding Sources
 
-This work was supported by the East Carolina University Undergraduate Research and Creative Activity Award to MEK and the National Science Foundation (GRFP to RBB, DEB 1845845 to ALP). 
+This work was supported by the East Carolina University and the National Science Foundation (GRFP to RBB, DEB 1845845 to ALP). 
 
 ## Contributors
 
